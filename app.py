@@ -31,8 +31,8 @@ if 'per_year_data' not in st.session_state:
         "AlgoPAD Monthly Growth %": [2, 2, 3],
         "AlgoDOCK Monthly Capacity": [1, 5, 10],
         "AlgoDOCK Monthly Growth %": [3, 3.0, 3.0],
-        "Collection % (this FY)": [80, 80, 80],
-        "Investment Raise (₹ Cr) this FY": [0, 0, 0]
+        "Collection % (this FY)": [75, 75, 75],
+        "Investment Raise (₹ Cr) this FY": [12, 0, 0]
     })
 
 per_year_df = st.sidebar.data_editor(
