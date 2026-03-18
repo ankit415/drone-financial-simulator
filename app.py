@@ -186,4 +186,73 @@ if st.button("Run Simulation", type="primary", use_container_width=True):
     cols = st.columns(5)
     cols[0].metric("Ending Cash", f"₹{med_ending:.1f} Cr")
     cols[1].metric("Months of Runway", f"{runway_mo:.1f}" if runway_mo != float('inf') else "∞")
-    cols[2].metric("Lowest Cash Point", f"
+    cols[2].metric("Lowest Cash Point", f"₹{min_cash:.1f} Cr (Month {min_mo})")
+    cols[3].metric("Break-even Month", f"Month {be_month}" if be_month is not None else "Not reached")
+    cols[4].metric("Avg Monthly Burn (last 6 mo)", f"₹{abs(np.mean(median_net[-6:] - median_net[-12:-6])):.1f} Cr/mo" if len(median_net) >= 12 else "N/A")
+
+    # ── Chart 1: Monthly cash flow ──
+    st.subheader("Monthly Cash Inflow vs Total Outflow")
+    fig_monthly = go.Figure()
+    months_axis = list(range(months))
+    fig_monthly.add_trace(go.Scatter(x=months_axis, y=med_cash_in, name="Cash Inflow", line_color="#2ca02c", fill='tozeroy'))
+    fig_monthly.add_trace(go.Scatter(x=months_axis, y=med_out, name="Outflow (incl. Capex)", line_color="#d62728", fill='tozeroy'))
+    fig_monthly.update_layout(
+        title="Monthly Cash Inflow vs Total Outflow",
+        xaxis_title="Month",
+        yaxis_title="₹ Crores per month",
+        height=500
+    )
+    st.plotly_chart(fig_monthly, use_container_width=True)
+
+    # ── Chart 2: Cumulative + Net Cash ──
+    st.subheader("Cumulative Inflow vs Outflow + Net Cash Position")
+    cum_in = np.cumsum(med_cash_in)
+    cum_out = np.cumsum(med_out)
+
+    fig_cum = go.Figure()
+    fig_cum.add_trace(go.Scatter(x=months_axis, y=cum_in, name="Cumulative Cash Inflow", line_color="#2ca02c", fill='tozeroy'))
+    fig_cum.add_trace(go.Scatter(x=months_axis, y=cum_out, name="Cumulative Outflow", line_color="#d62728", fill='tozeroy'))
+    fig_cum.add_trace(go.Scatter(x=months_axis, y=median_net, name="Net Cash Position", line_color="black", line_width=3))
+    fig_cum.add_hline(y=0, line_dash="dash", line_color="gray")
+    fig_cum.update_layout(
+        title="Cumulative View + Net Cash Balance",
+        xaxis_title="Month",
+        yaxis_title="Cumulative ₹ Crores",
+        height=550
+    )
+    st.plotly_chart(fig_cum, use_container_width=True)
+
+    # ── Yearly table ──
+    st.subheader("Yearly Financial Summary (median values)")
+    yearly_rows = []
+    for y in range((months + 11) // 12):
+        start = y * 12
+        end = min(start + 12, months)
+        rev_del_y = np.mean([sum(path[start:end]) for path in rev_delivered_paths]) if 'rev_delivered_paths' in locals() else 0
+        cash_in_y = np.mean([sum(path[start:end]) for path in cash_in_paths]) if 'cash_in_paths' in locals() else 0
+        out_y = np.mean([sum(path[start:end]) for path in outflow_paths]) if 'outflow_paths' in locals() else 0
+
+        raise_y = per_year_df.iloc[y]["Investment Raise (₹ Cr) this FY"] if y < len(per_year_df) else 0
+
+        mfg_y = out_y - (fixed_opex_annual_cr + service_cost_annual_cr + capex_annual_cr)
+        gross_y = rev_del_y - mfg_y
+        ebitda_y = gross_y - (fixed_opex_annual_cr + service_cost_annual_cr)
+
+        yearly_rows.append({
+            "Fiscal Year": f"FY {26+y}-{27+y}",
+            "Delivered Revenue (₹ Cr)": round(rev_del_y, 1),
+            "Cash Inflow (₹ Cr)": round(cash_in_y, 1),
+            "Investment Raised (₹ Cr)": round(raise_y, 1),
+            "Manufacturing Expense (₹ Cr)": round(mfg_y, 1),
+            "Gross Profit (₹ Cr)": round(gross_y, 1),
+            "Fixed + Service (₹ Cr)": round(fixed_opex_annual_cr + service_cost_annual_cr, 1),
+            "Capex (₹ Cr)": round(capex_annual_cr, 1),
+            "EBITDA approx (₹ Cr)": round(ebitda_y, 1)
+        })
+
+    st.dataframe(pd.DataFrame(yearly_rows), use_container_width=True, hide_index=True)
+
+else:
+    st.info("Adjust parameters → click **Run Simulation**")
+
+st.caption("Investor dashboard: runway, lowest cash, break-even, gross margin trend, cumulative net cash")
