@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 
 st.set_page_config(page_title="Drone Financial Model", layout="wide")
 st.title("🚁 Drone Hardware Startup — Core Financial Simulator")
-st.markdown("Per-FY capacity & growth | Delayed collection % | Investment raises per FY")
+st.markdown("Per-FY capacity & monthly growth | Delayed collection % | Raises per FY")
 
 # Persistent basic product info
 if 'products_basic' not in st.session_state:
@@ -17,7 +17,7 @@ if 'products_basic' not in st.session_state:
 
 products = st.session_state.products_basic
 
-# Per-Year Parameters (with investment raise)
+# Per-Year Parameters
 st.sidebar.header("Per-Year Parameters")
 
 if 'per_year_data' not in st.session_state:
@@ -70,7 +70,7 @@ n_simulations = st.sidebar.slider("Monte Carlo Runs", 1000, 5000, 2000, step=500
 monthly_noise_pct = st.sidebar.slider("Monthly Volume Noise ±%", 0, 35, 12)
 
 # ────────────────────────────────────────────────
-# SIMULATION
+# SIMULATION – Fixed version
 # ────────────────────────────────────────────────
 def run_simulation():
     rev_delivered_paths = []
@@ -86,20 +86,23 @@ def run_simulation():
         cash_in_run = [0.0] * months
         outflow_run = [0.0] * months
 
-        # We'll reload capacities at the start of each year
+        # Capacities will be reset each year
         capacities = None
 
         for m in range(months):
             year_idx = min(m // 12, max_years - 1)
             fy_row = per_year_df.iloc[year_idx]
 
-            # Reload base capacities at the start of each new fiscal year
+            # Reset capacities at start of each new fiscal year
             if m % 12 == 0:
                 capacities = np.array([
                     fy_row[f"{p} Monthly Capacity"] for p in products["Product"]
                 ], dtype=float)
 
-            # Apply monthly growth to the current year's capacities
+            # Apply monthly growth to current capacities
+            rev_delivered_month = 0.0
+            mfg_month = 0.0   # FIXED: initialize here every month
+
             for i, prod in enumerate(products["Product"]):
                 monthly_growth = fy_row[f"{prod} Monthly Growth %"] / 100
                 capacities[i] *= (1 + monthly_growth)
@@ -110,7 +113,7 @@ def run_simulation():
                 rev_delivered = units * products.at[i, "Selling Price (₹)"]
                 mfg = units * products.at[i, "Manufacturing Cost per unit (₹)"]
 
-                rev_delivered_month = rev_delivered  # accumulate
+                rev_delivered_month += rev_delivered
                 mfg_month += mfg
 
             collection_pct = fy_row["Collection % (this FY)"] / 100
@@ -124,7 +127,7 @@ def run_simulation():
             cash += fcf
             cash = max(cash, 0)
 
-            # Investment raise (already added at start of year)
+            # Investment raise (already handled above)
 
             rev_delivered_run[m] = rev_delivered_month / 1e7
             cash_in_run[m] = cash_in_month / 1e7
@@ -221,13 +224,14 @@ if st.button("Run Simulation", type="primary", use_container_width=True):
 
     with st.expander("Model notes"):
         st.markdown("""
-        - Delivered revenue from grown capacity × price × noise  
-        - Cash inflow = Delivered × Collection % (per FY)  
-        - Investment raises added at start of each FY  
-        - Costs paid in full immediately → realistic cash pressure when collection % low  
+        - Each FY starts with its own base monthly capacity (edited per year)  
+        - Capacity grows monthly within the FY using that year's growth rate  
+        - Cash inflow = Delivered revenue × Collection % (per FY)  
+        - Raises added at start of each FY  
+        - All costs paid immediately → shows real cash pressure  
         """)
 
 else:
     st.info("Adjust per-year parameters or other inputs → click **Run Simulation**")
 
-st.caption("Stable version with investment raises per FY | Cash flow & fund-raise planning focus")
+st.caption("Stable version | FY-specific capacity & growth fully respected | Cash flow focus")
