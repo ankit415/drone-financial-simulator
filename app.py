@@ -5,41 +5,43 @@ import plotly.graph_objects as go
 
 st.set_page_config(page_title="Drone Financial Model", layout="wide")
 st.title("🚁 Drone Hardware Startup — Core Financial Simulator")
-st.markdown("Investor-focused | Monthly capacity constraint | Revenue vs Outflow view")
+st.markdown("Monthly capacity × price model | Monthly growth on capacity | Persistent inputs")
 
 # ────────────────────────────────────────────────
-# SIDEBAR – Product table with monthly capacity
+# Initialize session state for persistent product table
 # ────────────────────────────────────────────────
-st.sidebar.header("Product Parameters (FY26-27 base)")
+if 'products' not in st.session_state:
+    st.session_state.products = pd.DataFrame({
+        "Product": ["AlgoX", "AlgoBMS", "AlgoPAD", "AlgoDOCK"],
+        "Selling Price (₹)": [35000, 8000, 350000, 800000],
+        "Manufacturing Cost per unit (₹)": [20000, 3500, 200000, 400000],
+        "Monthly Manufacturing Capacity (units)": [400, 300, 10, 2],
+        "Monthly Growth Rate %": [2.5, 3.0, 2.2, 3.5]
+    })
 
-default_products = pd.DataFrame({
-    "Product": ["AlgoX", "AlgoBMS", "AlgoPAD", "AlgoDOCK"],
-    "Selling Price (₹)": [1000000, 500000, 300000, 800000],
-    "Committed Units FY26-27": [4000, 10000, 15000, 5000],
-    "Manufacturing Cost per unit (₹)": [550000, 280000, 170000, 450000],
-    "Annual Sales Growth %": [35, 40, 30, 50],
-    "Monthly Manufacturing Capacity (units)": [400, 1000, 1500, 500]   # NEW: max units/month
-})
+# ────────────────────────────────────────────────
+# SIDEBAR
+# ────────────────────────────────────────────────
+st.sidebar.header("Product Parameters")
 
-products = st.sidebar.data_editor(
-    default_products,
+edited_df = st.sidebar.data_editor(
+    st.session_state.products,
     num_rows="fixed",
     use_container_width=True,
+    key="product_editor",
     column_config={
         "Selling Price (₹)": st.column_config.NumberColumn(format="%d", min_value=0),
-        "Committed Units FY26-27": st.column_config.NumberColumn(format="%d", min_value=0),
         "Manufacturing Cost per unit (₹)": st.column_config.NumberColumn(format="%d", min_value=0),
-        "Annual Sales Growth %": st.column_config.NumberColumn(format="%d", min_value=0, max_value=200),
-        "Monthly Manufacturing Capacity (units)": st.column_config.NumberColumn(format="%d", min_value=1, step=10)
+        "Monthly Manufacturing Capacity (units)": st.column_config.NumberColumn(format="%d", min_value=1, step=10),
+        "Monthly Growth Rate %": st.column_config.NumberColumn(format="%.1f", min_value=0.0, max_value=20.0, step=0.1)
     }
 )
 
-# Auto-calculated base year totals (display only)
-products["Revenue FY26-27 (₹ Cr)"] = (products["Selling Price (₹)"] * products["Committed Units FY26-27"]) / 1e7
-products["Manufacturing Expense FY26-27 (₹ Cr)"] = (products["Manufacturing Cost per unit (₹)"] * products["Committed Units FY26-27"]) / 1e7
+# Save back to session state only when changed
+if not edited_df.equals(st.session_state.products):
+    st.session_state.products = edited_df.copy()
 
-st.sidebar.metric("Total Committed Revenue FY26-27", f"₹{products['Revenue FY26-27 (₹ Cr)'].sum():.1f} Cr")
-st.sidebar.metric("Total Committed Mfg Expense FY26-27", f"₹{products['Manufacturing Expense FY26-27 (₹ Cr)'].sum():.1f} Cr")
+products = st.session_state.products
 
 # Company-wide inputs
 st.sidebar.header("Company-wide Assumptions")
@@ -60,47 +62,38 @@ def run_simulation():
     outflow_paths = []
     ending_cash_list = []
 
-    # Pre-compute monthly committed units (spread evenly over first 12 months)
-    products["Monthly Committed Base"] = products["Committed Units FY26-27"] / 12
-
     for _ in range(n_simulations):
         cash = initial_cash_cr * 1e7
-        revenue_this_run = [0.0] * months
-        outflow_this_run = [0.0] * months
+        revenue_run = [0.0] * months
+        outflow_run = [0.0] * months
+
+        # Current capacity starts at initial value
+        capacities = products["Monthly Manufacturing Capacity (units)"].values.copy()
 
         for m in range(months):
-            year = m // 12
-
             rev_month = 0.0
             mfg_month = 0.0
 
-            for _, row in products.iterrows():
-                # Capacity grows with annual growth rate
-                monthly_capacity = row["Monthly Manufacturing Capacity (units)"] * (1 + row["Annual Sales Growth %"]/100) ** year
+            for i, row in products.iterrows():
+                # Apply monthly growth to capacity
+                if m > 0:
+                    capacities[i] *= (1 + row["Monthly Growth Rate %"] / 100)
 
-                # Demand proxy: committed base grown annually + noise
-                demand_proxy = row["Monthly Committed Base"] * (1 + row["Annual Sales Growth %"]/100) ** year
-                demand_proxy *= np.random.normal(1.0, monthly_noise_pct / 100.0)
-                demand_proxy = max(0, demand_proxy)
+                # Apply noise around current capacity
+                units = capacities[i] * np.random.normal(1.0, monthly_noise_pct / 100.0)
+                units = max(0, units)
 
-                # Actual units sold = min(demand, capacity)
-                units_sold = min(demand_proxy, monthly_capacity)
-
-                rev = units_sold * row["Selling Price (₹)"]
-                mfg = units_sold * row["Manufacturing Cost per unit (₹)"]
+                rev = units * row["Selling Price (₹)"]
+                mfg = units * row["Manufacturing Cost per unit (₹)"]
 
                 rev_month += rev
                 mfg_month += mfg
 
-            # Fixed costs
             monthly_fixed = (fixed_opex_annual_cr + service_cost_annual_cr) * 1e7 / 12
-
-            # Capex
             monthly_capex = capex_annual_cr * 1e7 / 12
 
-            total_outflow = mfg_month + monthly_fixed + monthly_capex
+            total_out = mfg_month + monthly_fixed + monthly_capex
 
-            # EBITDA & simplified FCF
             gross = rev_month - mfg_month
             ebitda = gross - monthly_fixed
             tax = max(0, ebitda * 0.25)
@@ -110,42 +103,42 @@ def run_simulation():
             cash += fcf
             cash = max(cash, 0)
 
-            revenue_this_run[m] = rev_month / 1e7
-            outflow_this_run[m] = total_outflow / 1e7
+            revenue_run[m] = rev_month / 1e7
+            outflow_run[m] = total_out / 1e7
 
-        revenue_paths.append(revenue_this_run)
-        outflow_paths.append(outflow_this_run)
+        revenue_paths.append(revenue_run)
+        outflow_paths.append(outflow_run)
         ending_cash_list.append(cash / 1e7)
 
     median_rev = np.median(revenue_paths, axis=0)
     median_out = np.median(outflow_paths, axis=0)
     median_cash = np.median(ending_cash_list)
 
-    return median_rev, median_out, median_cash
+    return median_rev, median_out, median_cash, revenue_paths, outflow_paths
 
 # ────────────────────────────────────────────────
 # RUN & DISPLAY
 # ────────────────────────────────────────────────
 if st.button("Run Simulation", type="primary", use_container_width=True):
     with st.spinner("Running Monte Carlo simulation..."):
-        median_revenue, median_outflow, median_ending_cash = run_simulation()
+        median_rev, median_out, median_cash, all_rev_paths, all_out_paths = run_simulation()
 
-    # Summary metrics
+    # Summary
     st.subheader("Summary Results (median outcome)")
     cols = st.columns(4)
-    cols[0].metric("Ending Cash", f"₹{median_ending_cash:.1f} Cr")
-    cols[1].metric("Avg Monthly Revenue (last 6 months)", f"₹{np.mean(median_revenue[-6:]):.1f} Cr")
-    cols[2].metric("Avg Monthly Outflow", f"₹{np.mean(median_outflow):.1f} Cr")
-    cols[3].metric("Peak Monthly Burn", f"₹{max(median_outflow - median_revenue):.1f} Cr" if max(median_outflow - median_revenue) > 0 else "Positive cash flow")
+    cols[0].metric("Ending Cash", f"₹{median_cash:.1f} Cr")
+    cols[1].metric("Avg Monthly Revenue (last 6 mo)", f"₹{np.mean(median_rev[-6:]):.1f} Cr")
+    cols[2].metric("Avg Monthly Outflow", f"₹{np.mean(median_out):.1f} Cr")
+    cols[3].metric("Peak Monthly Burn", f"₹{max(median_out - median_rev):.1f} Cr" if max(median_out - median_rev) > 0 else "Positive")
 
-    # Main chart: Revenue vs Total Outflow
+    # Main chart
     st.subheader("Monthly Revenue vs Total Outflow (incl. Capex)")
 
     fig = go.Figure()
 
     fig.add_trace(go.Scatter(
         x=list(range(months)),
-        y=median_revenue,
+        y=median_rev,
         name="Revenue",
         line_color="#2ca02c",
         fill='tozeroy',
@@ -154,7 +147,7 @@ if st.button("Run Simulation", type="primary", use_container_width=True):
 
     fig.add_trace(go.Scatter(
         x=list(range(months)),
-        y=median_outflow,
+        y=median_out,
         name="Expenses + Capex",
         line_color="#d62728",
         fill='tozeroy',
@@ -172,17 +165,48 @@ if st.button("Run Simulation", type="primary", use_container_width=True):
 
     st.plotly_chart(fig, use_container_width=True)
 
-    with st.expander("How revenue & costs are calculated"):
+    # Yearly financial summary table
+    st.subheader("Yearly Financial Summary (median values)")
+
+    years = []
+    yearly_data = []
+
+    for y in range((months + 11) // 12):
+        start_m = y * 12
+        end_m = min(start_m + 12, months)
+
+        rev_y = np.sum([np.sum(path[start_m:end_m]) for path in all_rev_paths]) / n_simulations
+        out_y = np.sum([np.sum(path[start_m:end_m]) for path in all_out_paths]) / n_simulations
+        gross_y = rev_y - (out_y - (fixed_opex_annual_cr + service_cost_annual_cr + capex_annual_cr))
+        ebitda_y = gross_y - (fixed_opex_annual_cr + service_cost_annual_cr)
+
+        fy_label = f"FY {26+y}-{27+y}" if y < 2 else f"FY {26+y}-{27+y}"
+
+        yearly_data.append({
+            "Fiscal Year": fy_label,
+            "Revenue (₹ Cr)": round(rev_y, 1),
+            "Manufacturing Expense (₹ Cr)": round(rev_y - gross_y, 1),
+            "Gross Profit (₹ Cr)": round(gross_y, 1),
+            "Fixed + Service Cost (₹ Cr)": round(fixed_opex_annual_cr + service_cost_annual_cr, 1),
+            "Capex (₹ Cr)": round(capex_annual_cr, 1),
+            "EBITDA approx (₹ Cr)": round(ebitda_y, 1)
+        })
+
+    yearly_df = pd.DataFrame(yearly_data)
+    st.dataframe(yearly_df.style.format({
+        col: "{:.1f}" for col in yearly_df.columns if col != "Fiscal Year"
+    }), use_container_width=True, hide_index=True)
+
+    with st.expander("Model logic notes"):
         st.markdown("""
-        - **FY26-27** (months 0–11): monthly units = min(committed monthly average, monthly capacity) + noise
-        - **Later years**: monthly capacity grows with annual growth rate → units = min(grown capacity, noisy demand)
-        - Revenue & manufacturing cost recognized in the month of production/delivery
-        - Fixed OpEx + Service cost spread evenly monthly
-        - Capex spread evenly monthly
-        - Monthly noise adds realistic variability around the constrained level
+        - Monthly revenue per product = current capacity × selling price  
+        - Capacity compounds monthly: capacityₜ = capacityₜ₋₁ × (1 + monthly growth %)  
+        - Noise is applied around current capacity  
+        - Revenue & manufacturing cost recognized same month (no lead-time delay)  
+        - Fixed OpEx + Service + Capex spread evenly every month  
         """)
 
 else:
-    st.info("Edit product capacities, growth rates or other assumptions → click **Run Simulation**")
+    st.info("Edit product table or assumptions → click **Run Simulation**")
 
-st.caption("Updated model — monthly capacity constraint | Bengaluru drone startup — March 2026")
+st.caption("Model updated: monthly capacity × price | capacity grows monthly | inputs persist across reruns")
