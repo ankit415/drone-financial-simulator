@@ -86,22 +86,20 @@ def run_simulation():
         cash_in_run = [0.0] * months
         outflow_run = [0.0] * months
 
-        capacities = np.array([
-            per_year_df.iloc[0][f"{p} Monthly Capacity"] for p in products["Product"]
-        ], dtype=float)
+        # We'll reload capacities at the start of each year
+        capacities = None
 
         for m in range(months):
             year_idx = min(m // 12, max_years - 1)
             fy_row = per_year_df.iloc[year_idx]
 
-            # Investment raise at start of each FY
-            if m % 12 == 0 and year_idx < max_years:
-                raise_this_year = fy_row["Investment Raise (₹ Cr) this FY"] * 1e7
-                cash += raise_this_year
+            # Reload base capacities at the start of each new fiscal year
+            if m % 12 == 0:
+                capacities = np.array([
+                    fy_row[f"{p} Monthly Capacity"] for p in products["Product"]
+                ], dtype=float)
 
-            rev_delivered_month = 0.0
-            mfg_month = 0.0
-
+            # Apply monthly growth to the current year's capacities
             for i, prod in enumerate(products["Product"]):
                 monthly_growth = fy_row[f"{prod} Monthly Growth %"] / 100
                 capacities[i] *= (1 + monthly_growth)
@@ -112,7 +110,7 @@ def run_simulation():
                 rev_delivered = units * products.at[i, "Selling Price (₹)"]
                 mfg = units * products.at[i, "Manufacturing Cost per unit (₹)"]
 
-                rev_delivered_month += rev_delivered
+                rev_delivered_month = rev_delivered  # accumulate
                 mfg_month += mfg
 
             collection_pct = fy_row["Collection % (this FY)"] / 100
@@ -125,6 +123,8 @@ def run_simulation():
             fcf = cash_in_month - total_out
             cash += fcf
             cash = max(cash, 0)
+
+            # Investment raise (already added at start of year)
 
             rev_delivered_run[m] = rev_delivered_month / 1e7
             cash_in_run[m] = cash_in_month / 1e7
