@@ -4,19 +4,10 @@ import pandas as pd
 import plotly.graph_objects as go
 
 st.set_page_config(page_title="Drone Financial Model", layout="wide")
-st.title("🚁 Drone Hardware Startup — Investor Financial Simulator")
-st.markdown("Per-FY parameters | Delayed collection | Raises per FY | Full KPI dashboard")
+st.title("🚁 Drone Hardware Startup — Core Financial Simulator")
+st.markdown("Per-FY capacity & growth | Delayed collection % | Investment raises per FY")
 
-# ────────────────────────────────────────────────
 # Persistent basic product info
-# ────────────────────────────────────────────────
-if 'products_basic' not in st.session_state:
-    st.session_state.products_basic = pd.DataFrame({
-        "Product": ["AlgoX", "AlgoBMS", "AlgoPAD", "AlgoDOCK"],
-        "Selling Price (₹)": [30000, 8000, 350000, 800000],
-        "Manufacturing Cost per unit (₹)": [15000, 3500, 170000, 350000],
-    })
-
 if 'products_basic' not in st.session_state:
     st.session_state.products_basic = pd.DataFrame({
         "Product": ["AlgoX", "AlgoBMS", "AlgoPAD", "AlgoDOCK"],
@@ -26,9 +17,7 @@ if 'products_basic' not in st.session_state:
 
 products = st.session_state.products_basic
 
-# ────────────────────────────────────────────────
-# Per-Year Parameters
-# ────────────────────────────────────────────────
+# Per-Year Parameters (with investment raise)
 st.sidebar.header("Per-Year Parameters")
 
 if 'per_year_data' not in st.session_state:
@@ -56,9 +45,7 @@ per_year_df = st.sidebar.data_editor(
 if not per_year_df.equals(st.session_state.per_year_data):
     st.session_state.per_year_data = per_year_df.copy()
 
-# ────────────────────────────────────────────────
 # Product prices & costs
-# ────────────────────────────────────────────────
 st.sidebar.header("Product Prices & Costs")
 edited_basic = st.sidebar.data_editor(
     products,
@@ -71,9 +58,7 @@ if not edited_basic.equals(st.session_state.products_basic):
 
 products = edited_basic
 
-# ────────────────────────────────────────────────
 # Company-wide
-# ────────────────────────────────────────────────
 st.sidebar.header("Company-wide Assumptions")
 initial_cash_cr = st.sidebar.number_input("Starting Cash (₹ Cr)", value=2.0, step=0.5, min_value=0.0)
 fixed_opex_annual_cr = st.sidebar.number_input("Annual Fixed OpEx (₹ Cr)", value=2.0, step=0.2, min_value=0.0)
@@ -88,8 +73,7 @@ monthly_noise_pct = st.sidebar.slider("Monthly Volume Noise ±%", 0, 35, 12)
 # SIMULATION
 # ────────────────────────────────────────────────
 def run_simulation():
-    net_cash_paths = []
-    gm_paths = []
+    rev_delivered_paths = []
     cash_in_paths = []
     outflow_paths = []
     ending_cash_list = []
@@ -98,8 +82,7 @@ def run_simulation():
 
     for _ in range(n_simulations):
         cash = initial_cash_cr * 1e7
-        net_cash_run = [initial_cash_cr]
-        gm_run = [0.0] * months
+        rev_delivered_run = [0.0] * months
         cash_in_run = [0.0] * months
         outflow_run = [0.0] * months
 
@@ -111,6 +94,7 @@ def run_simulation():
             year_idx = min(m // 12, max_years - 1)
             fy_row = per_year_df.iloc[year_idx]
 
+            # Investment raise at start of each FY
             if m % 12 == 0 and year_idx < max_years:
                 raise_this_year = fy_row["Investment Raise (₹ Cr) this FY"] * 1e7
                 cash += raise_this_year
@@ -142,95 +126,78 @@ def run_simulation():
             cash += fcf
             cash = max(cash, 0)
 
-            net_cash_run.append(cash / 1e7)
-            gm_run[m] = ((rev_delivered_month - mfg_month) / rev_delivered_month * 100) if rev_delivered_month > 0 else 0
+            rev_delivered_run[m] = rev_delivered_month / 1e7
             cash_in_run[m] = cash_in_month / 1e7
             outflow_run[m] = total_out / 1e7
 
-        net_cash_paths.append(net_cash_run)
-        gm_paths.append(gm_run)
+        rev_delivered_paths.append(rev_delivered_run)
         cash_in_paths.append(cash_in_run)
         outflow_paths.append(outflow_run)
         ending_cash_list.append(cash / 1e7)
 
-    median_net_cash = np.median(net_cash_paths, axis=0)
-    median_gm = np.median(gm_paths, axis=0)
+    median_rev_del = np.median(rev_delivered_paths, axis=0)
     median_cash_in = np.median(cash_in_paths, axis=0)
     median_out = np.median(outflow_paths, axis=0)
     median_ending = np.median(ending_cash_list)
 
-    # KPIs
-    avg_burn_last6 = np.mean(median_net_cash[-6:] - median_net_cash[-12:-6]) if len(median_net_cash) >= 12 else 0
-    runway_months = (median_ending / abs(avg_burn_last6)) if avg_burn_last6 < 0 else float('inf')
-    min_cash = np.min(median_net_cash)
-    min_cash_month = np.argmin(median_net_cash)
-    break_even_month = next((i for i, v in enumerate(median_net_cash) if v >= 0), None)
-
-    return (
-        median_net_cash, median_gm, median_cash_in, median_out,
-        median_ending, runway_months, min_cash, min_cash_month, break_even_month
-    )
+    return median_rev_del, median_cash_in, median_out, median_ending, rev_delivered_paths, cash_in_paths, outflow_paths
 
 # ────────────────────────────────────────────────
-# RUN BUTTON & DISPLAY
+# RUN & DISPLAY
 # ────────────────────────────────────────────────
 if st.button("Run Simulation", type="primary", use_container_width=True):
     with st.spinner("Running Monte Carlo..."):
-        (
-            median_net, median_gm, med_cash_in, med_out,
-            med_ending, runway_mo, min_cash, min_mo, be_month
-        ) = run_simulation()
+        med_rev_del, med_cash_in, med_out, med_ending, all_rev_del, all_cash_in, all_out = run_simulation()
 
-    # ── KPI Cards ──
-    st.subheader("Key Investor KPIs (median outcome)")
+    # Summary
+    st.subheader("Summary (median outcome)")
     cols = st.columns(5)
     cols[0].metric("Ending Cash", f"₹{med_ending:.1f} Cr")
-    cols[1].metric("Months of Runway", f"{runway_mo:.1f}" if runway_mo != float('inf') else "∞")
-    cols[2].metric("Lowest Cash Point", f"₹{min_cash:.1f} Cr (Month {min_mo})")
-    cols[3].metric("Break-even Month", f"Month {be_month}" if be_month is not None else "Not reached")
-    cols[4].metric("Avg Monthly Burn (last 6 mo)", f"₹{abs(np.mean(median_net[-6:] - median_net[-12:-6])):.1f} Cr/mo" if len(median_net) >= 12 else "N/A")
+    cols[1].metric("Avg Monthly Cash Inflow (last 6 mo)", f"₹{np.mean(med_cash_in[-6:]):.1f} Cr")
+    cols[2].metric("Avg Monthly Outflow", f"₹{np.mean(med_out):.1f} Cr")
+    cols[3].metric("Peak Monthly Burn", f"₹{max(med_out - med_cash_in):.1f} Cr" if max(med_out - med_cash_in) > 0 else "Positive")
+    cols[4].metric("Total Raises Planned", f"₹{per_year_df['Investment Raise (₹ Cr) this FY'].sum():.1f} Cr")
 
-    # ── Chart 1: Monthly cash flow ──
+    # Monthly cash flow chart
     st.subheader("Monthly Cash Inflow vs Total Outflow")
     fig_monthly = go.Figure()
     months_axis = list(range(months))
     fig_monthly.add_trace(go.Scatter(x=months_axis, y=med_cash_in, name="Cash Inflow", line_color="#2ca02c", fill='tozeroy'))
     fig_monthly.add_trace(go.Scatter(x=months_axis, y=med_out, name="Outflow (incl. Capex)", line_color="#d62728", fill='tozeroy'))
     fig_monthly.update_layout(
-        title="Monthly Cash Inflow vs Total Outflow",
+        title="Monthly Cash Inflow vs Total Outflow — Median Path",
         xaxis_title="Month",
         yaxis_title="₹ Crores per month",
+        hovermode="x unified",
         height=500
     )
     st.plotly_chart(fig_monthly, use_container_width=True)
 
-    # ── Chart 2: Cumulative + Net Cash ──
-    st.subheader("Cumulative Inflow vs Outflow + Net Cash Position")
+    # Cumulative chart
+    st.subheader("Cumulative Cash Inflow vs Cumulative Outflow")
     cum_in = np.cumsum(med_cash_in)
     cum_out = np.cumsum(med_out)
 
     fig_cum = go.Figure()
     fig_cum.add_trace(go.Scatter(x=months_axis, y=cum_in, name="Cumulative Cash Inflow", line_color="#2ca02c", fill='tozeroy'))
     fig_cum.add_trace(go.Scatter(x=months_axis, y=cum_out, name="Cumulative Outflow", line_color="#d62728", fill='tozeroy'))
-    fig_cum.add_trace(go.Scatter(x=months_axis, y=median_net, name="Net Cash Position", line_color="black", line_width=3))
-    fig_cum.add_hline(y=0, line_dash="dash", line_color="gray")
     fig_cum.update_layout(
-        title="Cumulative View + Net Cash Balance",
+        title="Cumulative View",
         xaxis_title="Month",
         yaxis_title="Cumulative ₹ Crores",
-        height=550
+        height=500
     )
     st.plotly_chart(fig_cum, use_container_width=True)
 
-    # ── Yearly table ──
+    # Yearly summary table
     st.subheader("Yearly Financial Summary (median values)")
     yearly_rows = []
     for y in range((months + 11) // 12):
         start = y * 12
         end = min(start + 12, months)
-        rev_del_y = np.mean([sum(path[start:end]) for path in rev_delivered_paths]) if 'rev_delivered_paths' in locals() else 0
-        cash_in_y = np.mean([sum(path[start:end]) for path in cash_in_paths]) if 'cash_in_paths' in locals() else 0
-        out_y = np.mean([sum(path[start:end]) for path in outflow_paths]) if 'outflow_paths' in locals() else 0
+        rev_del_y = np.mean([sum(path[start:end]) for path in all_rev_del])
+        cash_in_y = np.mean([sum(path[start:end]) for path in all_cash_in])
+        out_y = np.mean([sum(path[start:end]) for path in all_out])
 
         raise_y = per_year_df.iloc[y]["Investment Raise (₹ Cr) this FY"] if y < len(per_year_df) else 0
 
@@ -252,7 +219,15 @@ if st.button("Run Simulation", type="primary", use_container_width=True):
 
     st.dataframe(pd.DataFrame(yearly_rows), use_container_width=True, hide_index=True)
 
-else:
-    st.info("Adjust parameters → click **Run Simulation**")
+    with st.expander("Model notes"):
+        st.markdown("""
+        - Delivered revenue from grown capacity × price × noise  
+        - Cash inflow = Delivered × Collection % (per FY)  
+        - Investment raises added at start of each FY  
+        - Costs paid in full immediately → realistic cash pressure when collection % low  
+        """)
 
-st.caption("Investor dashboard: runway, lowest cash, break-even, gross margin trend, cumulative net cash")
+else:
+    st.info("Adjust per-year parameters or other inputs → click **Run Simulation**")
+
+st.caption("Stable version with investment raises per FY | Cash flow & fund-raise planning focus")
