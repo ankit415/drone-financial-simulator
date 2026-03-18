@@ -20,7 +20,7 @@ if 'products_basic' not in st.session_state:
 products = st.session_state.products_basic
 
 # ────────────────────────────────────────────────
-# Per-Year Inputs table (now includes Collection %)
+# Per-Year Inputs (now includes Collection %)
 # ────────────────────────────────────────────────
 st.sidebar.header("Per-Year Parameters")
 
@@ -49,7 +49,7 @@ if not per_year_df.equals(st.session_state.per_year_data):
     st.session_state.per_year_data = per_year_df.copy()
 
 # ────────────────────────────────────────────────
-# Basic product prices & costs (still editable)
+# Basic product prices & costs
 # ────────────────────────────────────────────────
 st.sidebar.header("Product Prices & Costs")
 edited_basic = st.sidebar.data_editor(
@@ -80,8 +80,8 @@ monthly_noise_pct = st.sidebar.slider("Monthly Volume Noise ±%", 0, 35, 12)
 # SIMULATION
 # ────────────────────────────────────────────────
 def run_simulation():
-    revenue_delivered_paths = []   # what is produced/delivered
-    cash_inflow_paths = []         # what is actually collected
+    rev_delivered_paths = []
+    cash_in_paths = []
     outflow_paths = []
     ending_cash_list = []
 
@@ -128,9 +128,8 @@ def run_simulation():
             ebitda = gross - monthly_fixed
             tax = max(0, ebitda * 0.25)
             nopat = ebitda - tax
+            fcf = cash_in_month - total_out   # cash inflow minus full outflow
 
-            # Cash flow: inflow from collections - full outflow
-            fcf = cash_in_month - total_out
             cash += fcf
             cash = max(cash, 0)
 
@@ -138,72 +137,130 @@ def run_simulation():
             cash_in_run[m] = cash_in_month / 1e7
             outflow_run[m] = total_out / 1e7
 
-        revenue_delivered_paths.append(rev_delivered_run)
-        cash_inflow_paths.append(cash_in_run)
+        rev_delivered_paths.append(rev_delivered_run)
+        cash_in_paths.append(cash_in_run)
         outflow_paths.append(outflow_run)
         ending_cash_list.append(cash / 1e7)
 
-    median_delivered = np.median(revenue_delivered_paths, axis=0)
-    median_cash_in = np.median(cash_inflow_paths, axis=0)
+    median_rev_del = np.median(rev_delivered_paths, axis=0)
+    median_cash_in = np.median(cash_in_paths, axis=0)
     median_out = np.median(outflow_paths, axis=0)
     median_ending = np.median(ending_cash_list)
 
-    return median_delivered, median_cash_in, median_out, median_ending
+    return median_rev_del, median_cash_in, median_out, median_ending, rev_delivered_paths, cash_in_paths, outflow_paths
 
 # ────────────────────────────────────────────────
 # RUN & DISPLAY
 # ────────────────────────────────────────────────
 if st.button("Run Simulation", type="primary", use_container_width=True):
     with st.spinner("Running Monte Carlo..."):
-        med_delivered, med_cash_in, med_out, med_cash = run_simulation()
+        med_rev_del, med_cash_in, med_out, med_ending, all_rev_del, all_cash_in, all_out = run_simulation()
 
-    # Summary
+    # Summary metrics
     st.subheader("Summary (median outcome)")
     cols = st.columns(5)
-    cols[0].metric("Ending Cash", f"₹{med_cash:.1f} Cr")
-    cols[1].metric("Avg Monthly Delivered Revenue (last 6 mo)", f"₹{np.mean(med_delivered[-6:]):.1f} Cr")
+    cols[0].metric("Ending Cash", f"₹{med_ending:.1f} Cr")
+    cols[1].metric("Avg Monthly Delivered Rev (last 6 mo)", f"₹{np.mean(med_rev_del[-6:]):.1f} Cr")
     cols[2].metric("Avg Monthly Cash Inflow (last 6 mo)", f"₹{np.mean(med_cash_in[-6:]):.1f} Cr")
     cols[3].metric("Avg Monthly Outflow", f"₹{np.mean(med_out):.1f} Cr")
     cols[4].metric("Peak Monthly Cash Burn", f"₹{max(med_out - med_cash_in):.1f} Cr" if max(med_out - med_cash_in) > 0 else "Positive")
 
-    # Main chart – now shows cash inflow vs outflow
-    st.subheader("Monthly Cash Inflow vs Total Outflow (incl. Capex)")
-
-    fig = go.Figure()
+    # Chart 1: Monthly cash flow
+    st.subheader("Monthly Cash Inflow vs Total Outflow")
+    fig_monthly = go.Figure()
     months_axis = list(range(months))
 
-    fig.add_trace(go.Scatter(x=months_axis, y=med_cash_in,
-                             name="Cash Inflow (after collection delay)",
-                             line_color="#2ca02c",
-                             fill='tozeroy',
-                             fillcolor='rgba(44,160,44,0.18)'))
+    fig_monthly.add_trace(go.Scatter(x=months_axis, y=med_cash_in,
+                                     name="Cash Inflow", line_color="#2ca02c",
+                                     fill='tozeroy', fillcolor='rgba(44,160,44,0.18)'))
 
-    fig.add_trace(go.Scatter(x=months_axis, y=med_out,
-                             name="Expenses + Capex (paid immediately)",
-                             line_color="#d62728",
-                             fill='tozeroy',
-                             fillcolor='rgba(214,39,40,0.18)'))
+    fig_monthly.add_trace(go.Scatter(x=months_axis, y=med_out,
+                                     name="Outflow (incl. Capex)", line_color="#d62728",
+                                     fill='tozeroy', fillcolor='rgba(214,39,40,0.18)'))
 
-    fig.update_layout(
-        title="Cash Inflow vs Total Cash Outflow — Median Path",
+    fig_monthly.update_layout(
+        title="Monthly Cash Inflow vs Total Cash Outflow — Median Path",
         xaxis_title="Month",
         yaxis_title="₹ Crores per month",
         hovermode="x unified",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        height=550
+        height=500
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig_monthly, use_container_width=True)
 
-    with st.expander("How cash flow delay works"):
+    # Chart 2: Cumulative
+    st.subheader("Cumulative Revenue vs Cumulative Expenses + Capex")
+    cum_rev = np.cumsum(med_cash_in)
+    cum_out = np.cumsum(med_out)
+
+    fig_cum = go.Figure()
+
+    fig_cum.add_trace(go.Scatter(x=months_axis, y=cum_rev,
+                                 name="Cumulative Cash Inflow",
+                                 line_color="#2ca02c",
+                                 fill='tozeroy', fillcolor='rgba(44,160,44,0.12)'))
+
+    fig_cum.add_trace(go.Scatter(x=months_axis, y=cum_out,
+                                 name="Cumulative Outflow",
+                                 line_color="#d62728",
+                                 fill='tozeroy', fillcolor='rgba(214,39,40,0.12)'))
+
+    fig_cum.update_layout(
+        title="Cumulative View — How cash position evolves over time",
+        xaxis_title="Month",
+        yaxis_title="Cumulative ₹ Crores",
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        height=500
+    )
+    st.plotly_chart(fig_cum, use_container_width=True)
+
+    # Yearly financial table
+    st.subheader("Yearly Financial Summary (median values)")
+
+    yearly_rows = []
+    for y in range((months + 11) // 12):
+        start = y * 12
+        end = min(start + 12, months)
+
+        rev_del_y = np.mean([sum(path[start:end]) for path in all_rev_del])
+        cash_in_y = np.mean([sum(path[start:end]) for path in all_cash_in])
+        out_y = np.mean([sum(path[start:end]) for path in all_out])
+
+        mfg_y = out_y - (fixed_opex_annual_cr + service_cost_annual_cr + capex_annual_cr)
+        gross_y = rev_del_y - mfg_y
+        ebitda_y = gross_y - (fixed_opex_annual_cr + service_cost_annual_cr)
+
+        fy_label = f"FY {26+y}-{27+y}"
+
+        yearly_rows.append({
+            "Fiscal Year": fy_label,
+            "Delivered Revenue (₹ Cr)": round(rev_del_y, 1),
+            "Cash Inflow (₹ Cr)": round(cash_in_y, 1),
+            "Manufacturing Expense (₹ Cr)": round(mfg_y, 1),
+            "Gross Profit (₹ Cr)": round(gross_y, 1),
+            "Fixed + Service Cost (₹ Cr)": round(fixed_opex_annual_cr + service_cost_annual_cr, 1),
+            "Capex (₹ Cr)": round(capex_annual_cr, 1),
+            "EBITDA approx (₹ Cr)": round(ebitda_y, 1)
+        })
+
+    yearly_df = pd.DataFrame(yearly_rows)
+    st.dataframe(
+        yearly_df.style.format({col: "{:.1f}" for col in yearly_df.columns if col != "Fiscal Year"}),
+        use_container_width=True,
+        hide_index=True
+    )
+
+    with st.expander("Model logic & assumptions"):
         st.markdown("""
-        - **Delivered revenue** is calculated from grown capacity × price × noise  
-        - Only **Collection %** of delivered revenue becomes cash in the current month  
-        - The remaining portion is delayed (not collected yet) — creates realistic cash crunch  
-        - All costs (mfg, fixed, service, capex) are paid in full in the current month  
-        - Collection % changes per fiscal year (typical improvement as relationships mature)  
+        - Delivered revenue = grown capacity × price × noise  
+        - Cash inflow = Delivered revenue × Collection % (per FY)  
+        - All costs paid in full in current month → realistic cash flow pressure when collection % is low  
+        - Capacity compounds monthly using the FY's monthly growth rate  
+        - Inputs persist across reruns until edited  
         """)
 
 else:
     st.info("Adjust per-year collection %, capacity, growth or other inputs → click **Run Simulation**")
 
-st.caption("Updated: cash collection delay per FY | Inputs persist | Bengaluru drone startup model")
+st.caption("Model with delayed cash collection + yearly table + cumulative graph | Bengaluru drone startup — March 2026")
