@@ -1,24 +1,24 @@
 import streamlit as st
 import numpy as np
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
 
 st.set_page_config(page_title="Drone Financial Model", layout="wide")
 st.title("🚁 Drone Hardware Startup — Core Financial Simulator")
-st.markdown("Simplified investor view — 4 products | Annual growth | Fixed costs & capex")
+st.markdown("Investor-focused | Product-level lead-time delay | Revenue vs Outflow view")
 
 # ────────────────────────────────────────────────
-# SIDEBAR – Product table + core assumptions
+# SIDEBAR – Product table with lead-time
 # ────────────────────────────────────────────────
-st.sidebar.header("Product Parameters (FY26-27 base year)")
+st.sidebar.header("Product Parameters (FY26-27 committed units)")
 
 default_products = pd.DataFrame({
     "Product": ["AlgoX", "AlgoBMS", "AlgoPAD", "AlgoDOCK"],
     "Selling Price (₹)": [1000000, 500000, 300000, 800000],
-    "Units in FY26-27": [4000, 10000, 15000, 5000],
+    "Committed Units FY26-27": [4000, 10000, 15000, 5000],
     "Manufacturing Cost per unit (₹)": [550000, 280000, 170000, 450000],
-    "Annual Sales Growth %": [35, 40, 30, 50]
+    "Annual Sales Growth %": [35, 40, 30, 50],
+    "Lead-time (months)": [3, 2, 4, 6]   # NEW column
 })
 
 products = st.sidebar.data_editor(
@@ -26,24 +26,22 @@ products = st.sidebar.data_editor(
     num_rows="fixed",
     use_container_width=True,
     column_config={
-        "Selling Price (₹)": st.column_config.NumberColumn(format="%d"),
-        "Units in FY26-27": st.column_config.NumberColumn(format="%d", min_value=0),
+        "Selling Price (₹)": st.column_config.NumberColumn(format="%d", min_value=0),
+        "Committed Units FY26-27": st.column_config.NumberColumn(format="%d", min_value=0),
         "Manufacturing Cost per unit (₹)": st.column_config.NumberColumn(format="%d", min_value=0),
-        "Annual Sales Growth %": st.column_config.NumberColumn(format="%d", min_value=0, max_value=200)
+        "Annual Sales Growth %": st.column_config.NumberColumn(format="%d", min_value=0, max_value=200),
+        "Lead-time (months)": st.column_config.NumberColumn(format="%d", min_value=0, max_value=24)
     }
 )
 
-# Auto-calculated totals
-products["Revenue FY26-27 (₹ Cr)"] = (products["Selling Price (₹)"] * products["Units in FY26-27"]) / 1e7
-products["Manufacturing Expense FY26-27 (₹ Cr)"] = (products["Manufacturing Cost per unit (₹)"] * products["Units in FY26-27"]) / 1e7
+# Auto-calculated base year totals (for display only)
+products["Revenue FY26-27 (₹ Cr)"] = (products["Selling Price (₹)"] * products["Committed Units FY26-27"]) / 1e7
+products["Manufacturing Expense FY26-27 (₹ Cr)"] = (products["Manufacturing Cost per unit (₹)"] * products["Committed Units FY26-27"]) / 1e7
 
-total_rev_base = products["Revenue FY26-27 (₹ Cr)"].sum()
-total_mfg_base = products["Manufacturing Expense FY26-27 (₹ Cr)"].sum()
+st.sidebar.metric("Total Committed Revenue FY26-27", f"₹{products['Revenue FY26-27 (₹ Cr)'].sum():.1f} Cr")
+st.sidebar.metric("Total Committed Mfg Expense FY26-27", f"₹{products['Manufacturing Expense FY26-27 (₹ Cr)'].sum():.1f} Cr")
 
-st.sidebar.metric("Total Revenue FY26-27", f"₹{total_rev_base:.1f} Cr")
-st.sidebar.metric("Total Manufacturing Expense FY26-27", f"₹{total_mfg_base:.1f} Cr")
-
-# Other core assumptions
+# Company-wide inputs
 st.sidebar.header("Company-wide Assumptions")
 initial_cash_cr = st.sidebar.number_input("Starting Cash (₹ Cr)", value=2.0, step=0.5, min_value=0.0)
 fixed_opex_annual_cr = st.sidebar.number_input("Annual Fixed OpEx (₹ Cr)", value=2.0, step=0.2, min_value=0.0)
@@ -51,129 +49,143 @@ service_cost_annual_cr = st.sidebar.number_input("Annual Product Service Cost (�
 capex_annual_cr = st.sidebar.number_input("Annual Capex (₹ Cr)", value=1.5, step=0.5, min_value=0.0)
 
 months = st.sidebar.slider("Forecast Horizon (months)", 12, 60, 24)
-n_simulations = st.sidebar.slider("Monte Carlo Runs", 1000, 10000, 3000, step=500)
+n_simulations = st.sidebar.slider("Monte Carlo Runs", 1000, 5000, 2000, step=500)
 monthly_noise_pct = st.sidebar.slider("Monthly Volume Noise ±%", 0, 35, 12)
 
 # ────────────────────────────────────────────────
-# SIMULATION LOGIC
+# SIMULATION
 # ────────────────────────────────────────────────
 def run_simulation():
-    results = []
-    cash_paths = []
+    revenue_paths = []
+    outflow_paths = []
+    ending_cash_list = []
 
-    # Prepare monthly base per product
-    products["Monthly Base Units"] = products["Units in FY26-27"] / 12   # spread evenly over 12 months
+    # Pre-compute monthly committed inflow per product (spread over 12 months)
+    products["Monthly Committed Units"] = products["Committed Units FY26-27"] / 12
 
     for _ in range(n_simulations):
         cash = initial_cash_cr * 1e7
-        cash_history = [cash / 1e7]
+        revenue_this_run = [0.0] * months
+        outflow_this_run = [0.0] * months
 
         for m in range(months):
             year = m // 12
-            total_rev = 0.0
-            total_mfg = 0.0
+            rev_month = 0.0
+            mfg_month = 0.0
 
             for _, row in products.iterrows():
-                growth_factor = (1 + row["Annual Sales Growth %"] / 100) ** year
-                trend_units = row["Monthly Base Units"] * growth_factor
-                actual_units = trend_units * np.random.normal(1.0, monthly_noise_pct / 100)
-                actual_units = max(0, actual_units)
+                lt = int(row["Lead-time (months)"])
 
-                rev = actual_units * row["Selling Price (₹)"]
-                mfg = actual_units * row["Manufacturing Cost per unit (₹)"]
+                # Only products with lead-time already passed can deliver this month
+                if m >= lt:
+                    # How much backlog becomes deliverable this month
+                    # Simple model: spread original committed units after lead-time
+                    monthly_deliverable = row["Monthly Committed Units"] * (1 + row["Annual Sales Growth %"]/100) ** year
+                    monthly_deliverable *= np.random.normal(1.0, monthly_noise_pct / 100.0)
+                    monthly_deliverable = max(0, monthly_deliverable)
 
-                total_rev += rev
-                total_mfg += mfg
+                    rev = monthly_deliverable * row["Selling Price (₹)"]
+                    mfg = monthly_deliverable * row["Manufacturing Cost per unit (₹)"]
 
-            gross_profit = total_rev - total_mfg
+                    rev_month += rev
+                    mfg_month += mfg
 
-            opex = (fixed_opex_annual_cr + service_cost_annual_cr) * 1e7 / 12
-            ebitda = gross_profit - opex
+            # Fixed costs (OpEx + Service)
+            monthly_fixed = (fixed_opex_annual_cr + service_cost_annual_cr) * 1e7 / 12
 
-            tax = max(0, ebitda * 0.25)           # simple 25% effective rate
+            # Capex
+            monthly_capex = capex_annual_cr * 1e7 / 12
+
+            # Total outflow this month
+            total_outflow = mfg_month + monthly_fixed + monthly_capex
+
+            # EBITDA ≈ Gross profit - fixed
+            gross = rev_month - mfg_month
+            ebitda = gross - monthly_fixed
+
+            # Simplified tax
+            tax = max(0, ebitda * 0.25)
             nopat = ebitda - tax
 
-            capex_month = (capex_annual_cr * 1e7) / 12
-            fcf = nopat - capex_month               # simplified (no WC lag for now)
+            # Free cash flow ≈ nopat - capex
+            fcf = nopat - monthly_capex
 
             cash += fcf
             cash = max(cash, 0)
-            cash_history.append(cash / 1e7)
 
-        final_cash_cr = cash / 1e7
-        avg_gross_margin = ((total_rev - total_mfg) / total_rev * 100) if total_rev > 0 else 0
-        final_ebitda_cr = ebitda / 1e7
-        cum_fcf_cr = (cash - initial_cash_cr * 1e7) / 1e7   # cumulative FCF proxy
+            revenue_this_run[m] = rev_month / 1e7
+            outflow_this_run[m] = total_outflow / 1e7
 
-        results.append({
-            "Ending Cash (₹ Cr)": final_cash_cr,
-            "Avg Gross Margin %": avg_gross_margin,
-            "Final EBITDA (₹ Cr)": final_ebitda_cr,
-            "Cum. FCF (₹ Cr)": cum_fcf_cr,
-            "Survived": final_cash_cr > 0
-        })
+        revenue_paths.append(revenue_this_run)
+        outflow_paths.append(outflow_this_run)
+        ending_cash_list.append(cash / 1e7)
 
-        cash_paths.append(cash_history)
+    # Median paths
+    median_rev = np.median(revenue_paths, axis=0)
+    median_out = np.median(outflow_paths, axis=0)
+    median_ending_cash = np.median(ending_cash_list)
 
-    df = pd.DataFrame(results)
-    median_path = np.median(cash_paths, axis=0)
-    p10_path = np.percentile(cash_paths, 10, axis=0)
-    p90_path = np.percentile(cash_paths, 90, axis=0)
-
-    return df, median_path, p10_path, p90_path
+    return median_rev, median_out, median_ending_cash
 
 # ────────────────────────────────────────────────
-# RUN & DISPLAY
+# RUN BUTTON & OUTPUT
 # ────────────────────────────────────────────────
 if st.button("Run Simulation", type="primary", use_container_width=True):
-    with st.spinner("Running Monte Carlo..."):
-        df, median_cash, p10_cash, p90_cash = run_simulation()
+    with st.spinner("Running Monte Carlo simulation..."):
+        median_revenue, median_outflow, median_cash = run_simulation()
 
-    st.subheader("Core Investor Metrics (Median outcome)")
+    # ── KEY METRICS ──
+    st.subheader("Summary Results (median outcome)")
+    cols = st.columns(4)
+    cols[0].metric("Ending Cash", f"₹{median_cash:.1f} Cr")
+    cols[1].metric("Avg Monthly Revenue (later months)", f"₹{np.mean(median_revenue[-6:]):.1f} Cr")
+    cols[2].metric("Avg Monthly Outflow", f"₹{np.mean(median_outflow):.1f} Cr")
+    cols[3].metric("Peak Monthly Burn", f"₹{max(median_outflow - median_revenue):.1f} Cr" if max(median_outflow - median_revenue) > 0 else "Positive")
 
-    cols = st.columns(5)
-    cols[0].metric("Ending Cash", f"₹{df['Ending Cash (₹ Cr)'].median():.1f} Cr")
-    cols[1].metric("Avg Gross Margin", f"{df['Avg Gross Margin %'].median():.1f}%")
-    cols[2].metric("Final EBITDA", f"₹{df['Final EBITDA (₹ Cr)'].median():.1f} Cr")
-    cols[3].metric("Cumulative FCF", f"₹{df['Cum. FCF (₹ Cr)'].median():.1f} Cr")
-    cols[4].metric("Survival Probability", f"{df['Survived'].mean():.0%}")
+    # ── MAIN CHART ──
+    st.subheader("Monthly Revenue vs Total Outflow (incl. Capex)")
 
-    # Charts
-    col_chart1, col_chart2 = st.columns(2)
+    fig = go.Figure()
 
-    with col_chart1:
-        fig_hist = px.histogram(
-            df, x="Ending Cash (₹ Cr)", nbins=40,
-            title="Distribution of Ending Cash Position",
-            labels={"Ending Cash (₹ Cr)": "Ending Cash (₹ Cr)"}
-        )
-        fig_hist.add_vline(x=df['Ending Cash (₹ Cr)'].median(), line_dash="dash", line_color="red")
-        st.plotly_chart(fig_hist, use_container_width=True)
+    fig.add_trace(go.Scatter(
+        x=list(range(months)),
+        y=median_revenue,
+        name="Revenue",
+        line_color="#2ca02c",
+        fill='tozeroy',
+        fillcolor='rgba(44,160,44,0.18)'
+    ))
 
-    with col_chart2:
-        fig_path = go.Figure()
-        months_axis = list(range(months + 1))
-        fig_path.add_trace(go.Scatter(x=months_axis, y=median_cash, name="Median Cash", line_color="#2ca02c"))
-        fig_path.add_trace(go.Scatter(x=months_axis, y=p10_cash, name="10th %ile", line_color="#ff7f0e", line_dash="dot"))
-        fig_path.add_trace(go.Scatter(x=months_axis, y=p90_cash, name="90th %ile", line_color="#1f77b4", line_dash="dot", fill='tonexty'))
-        fig_path.update_layout(
-            title="Cash Balance Trajectory (with 10–90% range)",
-            xaxis_title="Months",
-            yaxis_title="Cash (₹ Cr)"
-        )
-        st.plotly_chart(fig_path, use_container_width=True)
+    fig.add_trace(go.Scatter(
+        x=list(range(months)),
+        y=median_outflow,
+        name="Expenses + Capex",
+        line_color="#d62728",
+        fill='tozeroy',
+        fillcolor='rgba(214,39,40,0.18)'
+    ))
 
-    with st.expander("How the model calculates revenue & expenses"):
+    fig.update_layout(
+        title="Revenue vs Total Costs (incl. Capex) — Median Path",
+        xaxis_title="Month",
+        yaxis_title="₹ Crores per month",
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        height=550
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+    with st.expander("How revenue and costs are timed"):
         st.markdown("""
-        **Revenue per month** = Σ over products (actual units sold × selling price)  
-        **Manufacturing expense per month** = Σ over products (actual units sold × mfg cost per unit)  
-        **Gross profit** = Revenue − Manufacturing expense  
-        **EBITDA** = Gross profit − Fixed OpEx/12 − Service cost/12  
-        **FCF (simplified)** = EBITDA − estimated tax − monthly capex portion  
-        Growth is applied annually per product; monthly volume has realistic noise.
+        - Committed units are spread evenly across the 12 months of each year.
+        - Revenue and manufacturing cost are only recognized **after the lead-time** for each product.
+        - This creates realistic cash lag: early months often show high fixed + capex outflow with little/no revenue.
+        - Monthly volume noise adds variability around the trend.
+        - Capex is spread evenly each month (annual amount / 12).
         """)
 
 else:
-    st.info("Adjust product parameters or company assumptions in the sidebar, then click **Run Simulation**.")
+    st.info("Adjust the product table (especially lead-times) and company assumptions, then click **Run Simulation**.")
 
-st.caption("Simplified core model — Bengaluru drone hardware startup — March 2026")
+st.caption("Updated model — lead-time delay + Revenue vs Outflow chart | Bengaluru drone startup — 2026")
