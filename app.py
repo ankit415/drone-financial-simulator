@@ -96,4 +96,84 @@ def run_simulation():
             capex_month = (capex_annual_cr * 1e7) / 12
             fcf = nopat - capex_month               # simplified (no WC lag for now)
 
-            cash +=
+            cash += fcf
+            cash = max(cash, 0)
+            cash_history.append(cash / 1e7)
+
+        final_cash_cr = cash / 1e7
+        avg_gross_margin = ((total_rev - total_mfg) / total_rev * 100) if total_rev > 0 else 0
+        final_ebitda_cr = ebitda / 1e7
+        cum_fcf_cr = (cash - initial_cash_cr * 1e7) / 1e7   # cumulative FCF proxy
+
+        results.append({
+            "Ending Cash (₹ Cr)": final_cash_cr,
+            "Avg Gross Margin %": avg_gross_margin,
+            "Final EBITDA (₹ Cr)": final_ebitda_cr,
+            "Cum. FCF (₹ Cr)": cum_fcf_cr,
+            "Survived": final_cash_cr > 0
+        })
+
+        cash_paths.append(cash_history)
+
+    df = pd.DataFrame(results)
+    median_path = np.median(cash_paths, axis=0)
+    p10_path = np.percentile(cash_paths, 10, axis=0)
+    p90_path = np.percentile(cash_paths, 90, axis=0)
+
+    return df, median_path, p10_path, p90_path
+
+# ────────────────────────────────────────────────
+# RUN & DISPLAY
+# ────────────────────────────────────────────────
+if st.button("Run Simulation", type="primary", use_container_width=True):
+    with st.spinner("Running Monte Carlo..."):
+        df, median_cash, p10_cash, p90_cash = run_simulation()
+
+    st.subheader("Core Investor Metrics (Median outcome)")
+
+    cols = st.columns(5)
+    cols[0].metric("Ending Cash", f"₹{df['Ending Cash (₹ Cr)'].median():.1f} Cr")
+    cols[1].metric("Avg Gross Margin", f"{df['Avg Gross Margin %'].median():.1f}%")
+    cols[2].metric("Final EBITDA", f"₹{df['Final EBITDA (₹ Cr)'].median():.1f} Cr")
+    cols[3].metric("Cumulative FCF", f"₹{df['Cum. FCF (₹ Cr)'].median():.1f} Cr")
+    cols[4].metric("Survival Probability", f"{df['Survived'].mean():.0%}")
+
+    # Charts
+    col_chart1, col_chart2 = st.columns(2)
+
+    with col_chart1:
+        fig_hist = px.histogram(
+            df, x="Ending Cash (₹ Cr)", nbins=40,
+            title="Distribution of Ending Cash Position",
+            labels={"Ending Cash (₹ Cr)": "Ending Cash (₹ Cr)"}
+        )
+        fig_hist.add_vline(x=df['Ending Cash (₹ Cr)'].median(), line_dash="dash", line_color="red")
+        st.plotly_chart(fig_hist, use_container_width=True)
+
+    with col_chart2:
+        fig_path = go.Figure()
+        months_axis = list(range(months + 1))
+        fig_path.add_trace(go.Scatter(x=months_axis, y=median_cash, name="Median Cash", line_color="#2ca02c"))
+        fig_path.add_trace(go.Scatter(x=months_axis, y=p10_cash, name="10th %ile", line_color="#ff7f0e", line_dash="dot"))
+        fig_path.add_trace(go.Scatter(x=months_axis, y=p90_cash, name="90th %ile", line_color="#1f77b4", line_dash="dot", fill='tonexty'))
+        fig_path.update_layout(
+            title="Cash Balance Trajectory (with 10–90% range)",
+            xaxis_title="Months",
+            yaxis_title="Cash (₹ Cr)"
+        )
+        st.plotly_chart(fig_path, use_container_width=True)
+
+    with st.expander("How the model calculates revenue & expenses"):
+        st.markdown("""
+        **Revenue per month** = Σ over products (actual units sold × selling price)  
+        **Manufacturing expense per month** = Σ over products (actual units sold × mfg cost per unit)  
+        **Gross profit** = Revenue − Manufacturing expense  
+        **EBITDA** = Gross profit − Fixed OpEx/12 − Service cost/12  
+        **FCF (simplified)** = EBITDA − estimated tax − monthly capex portion  
+        Growth is applied annually per product; monthly volume has realistic noise.
+        """)
+
+else:
+    st.info("Adjust product parameters or company assumptions in the sidebar, then click **Run Simulation**.")
+
+st.caption("Simplified core model — Bengaluru drone hardware startup — March 2026")
