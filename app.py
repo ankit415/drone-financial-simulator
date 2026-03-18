@@ -23,13 +23,13 @@ st.sidebar.header("Per-Year Parameters")
 if 'per_year_data' not in st.session_state:
     st.session_state.per_year_data = pd.DataFrame({
         "Fiscal Year": ["FY26-27", "FY27-28", "FY28-29"],
-        "AlgoX Monthly Capacity": [275, 600, 1000],
+        "AlgoX Monthly Capacity": [275, 500, 1200],
         "AlgoX Monthly Growth %": [5, 5, 5],
-        "AlgoBMS Monthly Capacity": [150, 400, 1000],
-        "AlgoBMS Monthly Growth %": [2, 3, 10],
-        "AlgoPAD Monthly Capacity": [2, 4, 10],
+        "AlgoBMS Monthly Capacity": [150, 400, 1200],
+        "AlgoBMS Monthly Growth %": [2, 10, 10],
+        "AlgoPAD Monthly Capacity": [2, 10, 10],
         "AlgoPAD Monthly Growth %": [2, 2, 3],
-        "AlgoDOCK Monthly Capacity": [1, 4, 7],
+        "AlgoDOCK Monthly Capacity": [1, 5, 10],
         "AlgoDOCK Monthly Growth %": [3, 3.0, 3.0],
         "Collection % (this FY)": [80, 80, 80],
         "Investment Raise (₹ Cr) this FY": [0, 0, 0]
