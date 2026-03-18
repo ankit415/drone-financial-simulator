@@ -13,8 +13,8 @@ st.markdown("Per-FY capacity & monthly growth | Delayed cash collection % per FY
 if 'products_basic' not in st.session_state:
     st.session_state.products_basic = pd.DataFrame({
         "Product": ["AlgoX", "AlgoBMS", "AlgoPAD", "AlgoDOCK"],
-        "Selling Price (₹)": [1000000, 500000, 300000, 800000],
-        "Manufacturing Cost per unit (₹)": [550000, 280000, 170000, 450000],
+        "Selling Price (₹)": [30000, 8000, 350000, 800000],
+        "Manufacturing Cost per unit (₹)": [15000, 3500, 170000, 350000],
     })
 
 products = st.session_state.products_basic
@@ -28,13 +28,13 @@ if 'per_year_data' not in st.session_state:
     st.session_state.per_year_data = pd.DataFrame({
         "Fiscal Year": ["FY26-27", "FY27-28", "FY28-29"],
         "AlgoX Monthly Capacity": [400, 600, 900],
-        "AlgoX Monthly Growth %": [2.5, 2.0, 1.8],
-        "AlgoBMS Monthly Capacity": [1000, 1500, 2200],
-        "AlgoBMS Monthly Growth %": [3.0, 2.5, 2.0],
-        "AlgoPAD Monthly Capacity": [1500, 2000, 2800],
-        "AlgoPAD Monthly Growth %": [2.2, 1.8, 1.5],
-        "AlgoDOCK Monthly Capacity": [500, 800, 1200],
-        "AlgoDOCK Monthly Growth %": [3.5, 3.0, 2.5],
+        "AlgoX Monthly Growth %": [5, 10, 10],
+        "AlgoBMS Monthly Capacity": [300, 400, 1000],
+        "AlgoBMS Monthly Growth %": [5, 10, 10],
+        "AlgoPAD Monthly Capacity": [2, 4, 10],
+        "AlgoPAD Monthly Growth %": [2, 2, 3],
+        "AlgoDOCK Monthly Capacity": [1, 4, 7],
+        "AlgoDOCK Monthly Growth %": [3.5, 3.0, 3],
         "Collection % (this FY)": [60, 75, 85]   # NEW: per FY cash collection percentage
     })
 
