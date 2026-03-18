@@ -17,6 +17,13 @@ if 'products_basic' not in st.session_state:
         "Manufacturing Cost per unit (₹)": [15000, 3500, 170000, 350000],
     })
 
+if 'products_basic' not in st.session_state:
+    st.session_state.products_basic = pd.DataFrame({
+        "Product": ["AlgoX", "AlgoBMS", "AlgoPAD", "AlgoDOCK"],
+        "Selling Price (₹)": [30000, 8000, 350000, 800000],
+        "Manufacturing Cost per unit (₹)": [15000, 3500, 170000, 350000],
+    })
+
 products = st.session_state.products_basic
 
 # ────────────────────────────────────────────────
@@ -82,7 +89,9 @@ monthly_noise_pct = st.sidebar.slider("Monthly Volume Noise ±%", 0, 35, 12)
 # ────────────────────────────────────────────────
 def run_simulation():
     net_cash_paths = []
-    gm_paths = []               # for gross margin %
+    gm_paths = []
+    cash_in_paths = []
+    outflow_paths = []
     ending_cash_list = []
 
     max_years = len(per_year_df)
@@ -91,6 +100,8 @@ def run_simulation():
         cash = initial_cash_cr * 1e7
         net_cash_run = [initial_cash_cr]
         gm_run = [0.0] * months
+        cash_in_run = [0.0] * months
+        outflow_run = [0.0] * months
 
         capacities = np.array([
             per_year_df.iloc[0][f"{p} Monthly Capacity"] for p in products["Product"]
@@ -100,7 +111,6 @@ def run_simulation():
             year_idx = min(m // 12, max_years - 1)
             fy_row = per_year_df.iloc[year_idx]
 
-            # Raise at start of FY
             if m % 12 == 0 and year_idx < max_years:
                 raise_this_year = fy_row["Investment Raise (₹ Cr) this FY"] * 1e7
                 cash += raise_this_year
@@ -132,111 +142,48 @@ def run_simulation():
             cash += fcf
             cash = max(cash, 0)
 
-            # Gross margin %
-            gm_run[m] = ((rev_delivered_month - mfg_month) / rev_delivered_month * 100) if rev_delivered_month > 0 else 0
-
             net_cash_run.append(cash / 1e7)
+            gm_run[m] = ((rev_delivered_month - mfg_month) / rev_delivered_month * 100) if rev_delivered_month > 0 else 0
+            cash_in_run[m] = cash_in_month / 1e7
+            outflow_run[m] = total_out / 1e7
 
         net_cash_paths.append(net_cash_run)
         gm_paths.append(gm_run)
+        cash_in_paths.append(cash_in_run)
+        outflow_paths.append(outflow_run)
         ending_cash_list.append(cash / 1e7)
 
     median_net_cash = np.median(net_cash_paths, axis=0)
     median_gm = np.median(gm_paths, axis=0)
+    median_cash_in = np.median(cash_in_paths, axis=0)
+    median_out = np.median(outflow_paths, axis=0)
     median_ending = np.median(ending_cash_list)
 
-    # Calculate KPIs
+    # KPIs
     avg_burn_last6 = np.mean(median_net_cash[-6:] - median_net_cash[-12:-6]) if len(median_net_cash) >= 12 else 0
     runway_months = (median_ending / abs(avg_burn_last6)) if avg_burn_last6 < 0 else float('inf')
     min_cash = np.min(median_net_cash)
     min_cash_month = np.argmin(median_net_cash)
     break_even_month = next((i for i, v in enumerate(median_net_cash) if v >= 0), None)
 
-    return median_net_cash, median_gm, median_ending, runway_months, min_cash, min_cash_month, break_even_month
+    return (
+        median_net_cash, median_gm, median_cash_in, median_out,
+        median_ending, runway_months, min_cash, min_cash_month, break_even_month
+    )
 
 # ────────────────────────────────────────────────
-# RUN & DISPLAY
+# RUN BUTTON & DISPLAY
 # ────────────────────────────────────────────────
 if st.button("Run Simulation", type="primary", use_container_width=True):
     with st.spinner("Running Monte Carlo..."):
-        median_net, median_gm, med_ending, runway_mo, min_cash, min_mo, be_month = run_simulation()
+        (
+            median_net, median_gm, med_cash_in, med_out,
+            med_ending, runway_mo, min_cash, min_mo, be_month
+        ) = run_simulation()
 
-    # KPI Cards
+    # ── KPI Cards ──
     st.subheader("Key Investor KPIs (median outcome)")
     cols = st.columns(5)
     cols[0].metric("Ending Cash", f"₹{med_ending:.1f} Cr")
-    cols[1].metric("Months of Runway", f"{runway_mo:.1f}" if runway_mo != float('inf') else "∞", delta_color="normal")
-    cols[2].metric("Lowest Cash Point", f"₹{min_cash:.1f} Cr (Month {min_mo})", delta_color="inverse" if min_cash < 0 else "normal")
-    cols[3].metric("Break-even Month", f"Month {be_month}" if be_month is not None else "Not reached")
-    cols[4].metric("Avg Monthly Burn (last 6 mo)", f"₹{abs(np.mean(median_net[-6:] - median_net[-12:-6])):.1f} Cr/mo" if len(median_net) >= 12 else "N/A")
-
-    # Chart 1: Monthly cash flow (inflow vs outflow)
-    st.subheader("Monthly Cash Inflow vs Outflow")
-    fig_monthly = go.Figure()
-    months_axis = list(range(months))
-    fig_monthly.add_trace(go.Scatter(x=months_axis, y=med_cash_in, name="Cash Inflow", line_color="#2ca02c", fill='tozeroy'))
-    fig_monthly.add_trace(go.Scatter(x=months_axis, y=med_out, name="Outflow", line_color="#d62728", fill='tozeroy'))
-    fig_monthly.update_layout(title="Monthly Cash Flow", xaxis_title="Month", yaxis_title="₹ Crores per month", height=500)
-    st.plotly_chart(fig_monthly, use_container_width=True)
-
-    # Chart 2: Cumulative + Net Cash + Gross Margin
-    st.subheader("Cumulative View + Net Cash & Gross Margin %")
-    cum_in = np.cumsum(med_cash_in)
-    cum_out = np.cumsum(med_out)
-
-    fig_cum = go.Figure()
-
-    fig_cum.add_trace(go.Scatter(x=months_axis, y=cum_in, name="Cumulative Cash Inflow", line_color="#2ca02c", fill='tozeroy'))
-    fig_cum.add_trace(go.Scatter(x=months_axis, y=cum_out, name="Cumulative Outflow", line_color="#d62728", fill='tozeroy'))
-    fig_cum.add_trace(go.Scatter(x=months_axis, y=median_net, name="Net Cash Position", line_color="black", line_width=3, mode='lines'))
-
-    # Gross Margin on secondary y-axis
-    fig_cum.add_trace(go.Scatter(x=months_axis, y=median_gm, name="Gross Margin %", line=dict(color='purple', dash='dot'), yaxis="y2"))
-
-    fig_cum.update_layout(
-        title="Cumulative Cash + Net Position + Gross Margin %",
-        xaxis_title="Month",
-        yaxis_title="Cumulative ₹ Crores",
-        yaxis2=dict(title="Gross Margin %", overlaying="y", side="right", range=[0, 100]),
-        hovermode="x unified",
-        height=600,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-    )
-    fig_cum.add_hline(y=0, line_dash="dash", line_color="gray")
-    st.plotly_chart(fig_cum, use_container_width=True)
-
-    # Yearly table
-    st.subheader("Yearly Financial Summary (median values)")
-    yearly_rows = []
-    for y in range((months + 11) // 12):
-        start = y * 12
-        end = min(start + 12, months)
-        rev_del_y = np.mean([sum(path[start:end]) for path in all_rev_del])
-        cash_in_y = np.mean([sum(path[start:end]) for path in all_cash_in])
-        out_y = np.mean([sum(path[start:end]) for path in all_out])
-
-        raise_y = per_year_df.iloc[y]["Investment Raise (₹ Cr) this FY"] if y < len(per_year_df) else 0
-
-        mfg_y = out_y - (fixed_opex_annual_cr + service_cost_annual_cr + capex_annual_cr)
-        gross_y = rev_del_y - mfg_y
-        ebitda_y = gross_y - (fixed_opex_annual_cr + service_cost_annual_cr)
-
-        yearly_rows.append({
-            "Fiscal Year": f"FY {26+y}-{27+y}",
-            "Delivered Revenue (₹ Cr)": round(rev_del_y, 1),
-            "Cash Inflow (₹ Cr)": round(cash_in_y, 1),
-            "Investment Raised (₹ Cr)": round(raise_y, 1),
-            "Manufacturing Expense (₹ Cr)": round(mfg_y, 1),
-            "Gross Profit (₹ Cr)": round(gross_y, 1),
-            "Gross Margin %": round(gross_y / rev_del_y * 100, 1) if rev_del_y > 0 else 0,
-            "Fixed + Service (₹ Cr)": round(fixed_opex_annual_cr + service_cost_annual_cr, 1),
-            "Capex (₹ Cr)": round(capex_annual_cr, 1),
-            "EBITDA approx (₹ Cr)": round(ebitda_y, 1)
-        })
-
-    st.dataframe(pd.DataFrame(yearly_rows), use_container_width=True, hide_index=True)
-
-else:
-    st.info("Adjust parameters in sidebar → click **Run Simulation**")
-
-st.caption("Investor dashboard: runway, lowest cash, break-even, gross margin trend, cumulative net cash")
+    cols[1].metric("Months of Runway", f"{runway_mo:.1f}" if runway_mo != float('inf') else "∞")
+    cols[2].metric("Lowest Cash Point", f"
