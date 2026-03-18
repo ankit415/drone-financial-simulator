@@ -5,12 +5,12 @@ import plotly.graph_objects as go
 
 st.set_page_config(page_title="Drone Financial Model", layout="wide")
 st.title("🚁 Drone Hardware Startup — Core Financial Simulator")
-st.markdown("Investor-focused | Product-level lead-time delay | Revenue vs Outflow view")
+st.markdown("Investor-focused | Monthly capacity constraint | Revenue vs Outflow view")
 
 # ────────────────────────────────────────────────
-# SIDEBAR – Product table with lead-time
+# SIDEBAR – Product table with monthly capacity
 # ────────────────────────────────────────────────
-st.sidebar.header("Product Parameters (FY26-27 committed units)")
+st.sidebar.header("Product Parameters (FY26-27 base)")
 
 default_products = pd.DataFrame({
     "Product": ["AlgoX", "AlgoBMS", "AlgoPAD", "AlgoDOCK"],
@@ -18,7 +18,7 @@ default_products = pd.DataFrame({
     "Committed Units FY26-27": [4000, 10000, 15000, 5000],
     "Manufacturing Cost per unit (₹)": [550000, 280000, 170000, 450000],
     "Annual Sales Growth %": [35, 40, 30, 50],
-    "Lead-time (months)": [3, 2, 4, 6]   # NEW column
+    "Monthly Manufacturing Capacity (units)": [400, 1000, 1500, 500]   # NEW: max units/month
 })
 
 products = st.sidebar.data_editor(
@@ -30,11 +30,11 @@ products = st.sidebar.data_editor(
         "Committed Units FY26-27": st.column_config.NumberColumn(format="%d", min_value=0),
         "Manufacturing Cost per unit (₹)": st.column_config.NumberColumn(format="%d", min_value=0),
         "Annual Sales Growth %": st.column_config.NumberColumn(format="%d", min_value=0, max_value=200),
-        "Lead-time (months)": st.column_config.NumberColumn(format="%d", min_value=0, max_value=24)
+        "Monthly Manufacturing Capacity (units)": st.column_config.NumberColumn(format="%d", min_value=1, step=10)
     }
 )
 
-# Auto-calculated base year totals (for display only)
+# Auto-calculated base year totals (display only)
 products["Revenue FY26-27 (₹ Cr)"] = (products["Selling Price (₹)"] * products["Committed Units FY26-27"]) / 1e7
 products["Manufacturing Expense FY26-27 (₹ Cr)"] = (products["Manufacturing Cost per unit (₹)"] * products["Committed Units FY26-27"]) / 1e7
 
@@ -60,8 +60,8 @@ def run_simulation():
     outflow_paths = []
     ending_cash_list = []
 
-    # Pre-compute monthly committed inflow per product (spread over 12 months)
-    products["Monthly Committed Units"] = products["Committed Units FY26-27"] / 12
+    # Pre-compute monthly committed units (spread evenly over first 12 months)
+    products["Monthly Committed Base"] = products["Committed Units FY26-27"] / 12
 
     for _ in range(n_simulations):
         cash = initial_cash_cr * 1e7
@@ -70,44 +70,41 @@ def run_simulation():
 
         for m in range(months):
             year = m // 12
+
             rev_month = 0.0
             mfg_month = 0.0
 
             for _, row in products.iterrows():
-                lt = int(row["Lead-time (months)"])
+                # Capacity grows with annual growth rate
+                monthly_capacity = row["Monthly Manufacturing Capacity (units)"] * (1 + row["Annual Sales Growth %"]/100) ** year
 
-                # Only products with lead-time already passed can deliver this month
-                if m >= lt:
-                    # How much backlog becomes deliverable this month
-                    # Simple model: spread original committed units after lead-time
-                    monthly_deliverable = row["Monthly Committed Units"] * (1 + row["Annual Sales Growth %"]/100) ** year
-                    monthly_deliverable *= np.random.normal(1.0, monthly_noise_pct / 100.0)
-                    monthly_deliverable = max(0, monthly_deliverable)
+                # Demand proxy: committed base grown annually + noise
+                demand_proxy = row["Monthly Committed Base"] * (1 + row["Annual Sales Growth %"]/100) ** year
+                demand_proxy *= np.random.normal(1.0, monthly_noise_pct / 100.0)
+                demand_proxy = max(0, demand_proxy)
 
-                    rev = monthly_deliverable * row["Selling Price (₹)"]
-                    mfg = monthly_deliverable * row["Manufacturing Cost per unit (₹)"]
+                # Actual units sold = min(demand, capacity)
+                units_sold = min(demand_proxy, monthly_capacity)
 
-                    rev_month += rev
-                    mfg_month += mfg
+                rev = units_sold * row["Selling Price (₹)"]
+                mfg = units_sold * row["Manufacturing Cost per unit (₹)"]
 
-            # Fixed costs (OpEx + Service)
+                rev_month += rev
+                mfg_month += mfg
+
+            # Fixed costs
             monthly_fixed = (fixed_opex_annual_cr + service_cost_annual_cr) * 1e7 / 12
 
             # Capex
             monthly_capex = capex_annual_cr * 1e7 / 12
 
-            # Total outflow this month
             total_outflow = mfg_month + monthly_fixed + monthly_capex
 
-            # EBITDA ≈ Gross profit - fixed
+            # EBITDA & simplified FCF
             gross = rev_month - mfg_month
             ebitda = gross - monthly_fixed
-
-            # Simplified tax
             tax = max(0, ebitda * 0.25)
             nopat = ebitda - tax
-
-            # Free cash flow ≈ nopat - capex
             fcf = nopat - monthly_capex
 
             cash += fcf
@@ -120,29 +117,28 @@ def run_simulation():
         outflow_paths.append(outflow_this_run)
         ending_cash_list.append(cash / 1e7)
 
-    # Median paths
     median_rev = np.median(revenue_paths, axis=0)
     median_out = np.median(outflow_paths, axis=0)
-    median_ending_cash = np.median(ending_cash_list)
+    median_cash = np.median(ending_cash_list)
 
-    return median_rev, median_out, median_ending_cash
+    return median_rev, median_out, median_cash
 
 # ────────────────────────────────────────────────
-# RUN BUTTON & OUTPUT
+# RUN & DISPLAY
 # ────────────────────────────────────────────────
 if st.button("Run Simulation", type="primary", use_container_width=True):
     with st.spinner("Running Monte Carlo simulation..."):
-        median_revenue, median_outflow, median_cash = run_simulation()
+        median_revenue, median_outflow, median_ending_cash = run_simulation()
 
-    # ── KEY METRICS ──
+    # Summary metrics
     st.subheader("Summary Results (median outcome)")
     cols = st.columns(4)
-    cols[0].metric("Ending Cash", f"₹{median_cash:.1f} Cr")
-    cols[1].metric("Avg Monthly Revenue (later months)", f"₹{np.mean(median_revenue[-6:]):.1f} Cr")
+    cols[0].metric("Ending Cash", f"₹{median_ending_cash:.1f} Cr")
+    cols[1].metric("Avg Monthly Revenue (last 6 months)", f"₹{np.mean(median_revenue[-6:]):.1f} Cr")
     cols[2].metric("Avg Monthly Outflow", f"₹{np.mean(median_outflow):.1f} Cr")
-    cols[3].metric("Peak Monthly Burn", f"₹{max(median_outflow - median_revenue):.1f} Cr" if max(median_outflow - median_revenue) > 0 else "Positive")
+    cols[3].metric("Peak Monthly Burn", f"₹{max(median_outflow - median_revenue):.1f} Cr" if max(median_outflow - median_revenue) > 0 else "Positive cash flow")
 
-    # ── MAIN CHART ──
+    # Main chart: Revenue vs Total Outflow
     st.subheader("Monthly Revenue vs Total Outflow (incl. Capex)")
 
     fig = go.Figure()
@@ -176,16 +172,17 @@ if st.button("Run Simulation", type="primary", use_container_width=True):
 
     st.plotly_chart(fig, use_container_width=True)
 
-    with st.expander("How revenue and costs are timed"):
+    with st.expander("How revenue & costs are calculated"):
         st.markdown("""
-        - Committed units are spread evenly across the 12 months of each year.
-        - Revenue and manufacturing cost are only recognized **after the lead-time** for each product.
-        - This creates realistic cash lag: early months often show high fixed + capex outflow with little/no revenue.
-        - Monthly volume noise adds variability around the trend.
-        - Capex is spread evenly each month (annual amount / 12).
+        - **FY26-27** (months 0–11): monthly units = min(committed monthly average, monthly capacity) + noise
+        - **Later years**: monthly capacity grows with annual growth rate → units = min(grown capacity, noisy demand)
+        - Revenue & manufacturing cost recognized in the month of production/delivery
+        - Fixed OpEx + Service cost spread evenly monthly
+        - Capex spread evenly monthly
+        - Monthly noise adds realistic variability around the constrained level
         """)
 
 else:
-    st.info("Adjust the product table (especially lead-times) and company assumptions, then click **Run Simulation**.")
+    st.info("Edit product capacities, growth rates or other assumptions → click **Run Simulation**")
 
-st.caption("Updated model — lead-time delay + Revenue vs Outflow chart | Bengaluru drone startup — 2026")
+st.caption("Updated model — monthly capacity constraint | Bengaluru drone startup — March 2026")
