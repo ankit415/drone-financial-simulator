@@ -4,173 +4,160 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 
-# For XIRR — simple approximation since numpy-financial not available
-def approximate_xirr(cashflows, dates=None):
-    """Very rough monthly IRR approximation → annualized"""
+# Simple XIRR approximation (no external lib needed)
+def approx_xirr(cashflows):
     if len(cashflows) < 2 or sum(cashflows) <= 0:
         return 0.0
+    # Very basic Newton-style IRR finder (monthly)
+    def npv(r):
+        return sum(cf / (1 + r)**(t/12.0) for t, cf in enumerate(cashflows))
     try:
-        from scipy.optimize import newton
-        def npv(r):
-            return sum(cf / (1 + r)**(t/12) for t, cf in enumerate(cashflows))
-        monthly_irr = newton(npv, 0.01, tol=1e-6, maxiter=100)
-        return ((1 + monthly_irr)**12 - 1) * 100
+        r = 0.01
+        for _ in range(50):
+            npv_val = npv(r)
+            deriv = sum(-cf * (t/12.0) / (1 + r)**((t/12.0)+1) for t, cf in enumerate(cashflows) if cf != 0)
+            if abs(deriv) < 1e-10:
+                break
+            r -= npv_val / deriv if deriv != 0 else 0
+        return ((1 + r)**12 - 1) * 100
     except:
         return 0.0
 
-st.set_page_config(page_title="Drone Financial Simulator", layout="wide")
-st.title("🚁 Drone Startup Investor Finance Model (Annual Growth)")
-st.markdown("**B2B Drone Hardware (AlgoX, AlgoBMS, AlgoPAD, AlgoDOCK)** — Annual growth version")
+st.set_page_config(page_title="Drone Investor Simulator", layout="wide")
+st.title("🚁 Drone Hardware Startup — Investor Monte Carlo Simulator")
+st.markdown("Order-book driven | Annual growth | Learning curve | Service ramp | XIRR focus")
 
-# ====================== SIDEBAR ======================
-st.sidebar.header("Core Parameters")
-col1, col2 = st.sidebar.columns(2)
-with col1:
-    initial_cash = st.number_input("Starting Cash (₹)", value=20_000_000, step=1_000_000, format="%d")
-    fixed_annual = st.number_input("Annual Fixed Costs (₹)", value=20_000_000, step=500_000, format="%d")
-    order_book = st.number_input("Order Book FY26-27 (₹)", value=170_000_000, step=1_000_000, format="%d")
-    months = st.slider("Time Horizon (months)", 12, 60, 24)
-    n_sims = st.slider("Simulations", 1000, 10000, 5000, step=1000)
+# ────────────────────────────────────────────────
+# SIDEBAR – Clean & Grouped
+# ────────────────────────────────────────────────
+with st.sidebar:
+    st.header("🎛️ Assumptions")
 
-with col2:
-    unit_price = st.number_input("Avg Unit Price (₹)", value=500_000, step=10_000, format="%d")
-    unit_cost = st.number_input("Base Manufacturing Cost (₹)", value=300_000, step=10_000, format="%d")
+    st.subheader("Starting Point")
+    initial_cash = st.number_input("Starting Cash (₹ Cr)", value=2.0, step=0.5, format="%.1f") * 1e7
+    fixed_annual = st.number_input("Annual Fixed OpEx (₹ Cr)", value=2.0, step=0.2, format="%.1f") * 1e7
+    order_book_cr = st.number_input("Order Book FY26-27 (₹ Cr)", value=17.0, step=1.0, format="%.1f")
+    order_book = order_book_cr * 1e7
 
-# Annual growth now
-growth_base_annual = st.sidebar.slider("Base Annual Growth (%)", 0, 100, 40) / 100
-growth_exp_annual = st.sidebar.slider("Expansion Annual Growth (%)", 0, 150, 70) / 100
-geopol_prob = st.sidebar.slider("Geopolitical Shock Prob per month (%)", 0, 20, 5) / 100
+    st.subheader("Time & Runs")
+    months = st.slider("Forecast Horizon (months)", 12, 60, 24)
+    n_sims = st.slider("Monte Carlo Runs", 1000, 10000, 5000, step=1000)
 
-enable_service = st.sidebar.checkbox("Enable AlgoDOCK Recurring Service", value=True)
-service_annual_percent = st.sidebar.slider("Annual Service Fee (% of unit price)", 0, 30, 10)
+    st.subheader("Unit Economics")
+    unit_price = st.number_input("Avg Selling Price per Unit (₹)", value=500000, step=10000)
+    unit_cost_base = st.number_input("Base Mfg Cost per Unit (₹)", value=300000, step=10000)
 
-# ====================== INVESTOR & ADVANCED ======================
-with st.sidebar.expander("💰 Investment & Exit (Investor View)", expanded=True):
-    investment_amount = st.number_input("Investment Amount (₹)", value=0, step=1_000_000, format="%d")
-    investment_month = st.slider("Investment Month", 0, 60, 0)
-    exit_multiple_ebitda = st.number_input("Exit Multiple on EBITDA", value=15.0, step=1.0)
+    st.subheader("Growth & Risk")
+    growth_base_annual = st.slider("Base Annual Growth %", 0, 100, 40) / 100
+    growth_exp_annual = st.slider("Expansion Annual Growth %", 0, 150, 70) / 100
+    geopol_monthly_prob = st.slider("Geopolitical Shock Prob (per month) %", 0, 20, 5) / 100
+    monthly_noise = st.slider("Monthly Demand Noise ±%", 0, 40, 15) / 100
 
-with st.sidebar.expander("Advanced Finance Settings"):
-    tax_rate = st.slider("Tax Rate (%)", 0, 40, 25) / 100
-    learning_index = st.slider("Learning Curve Index (negative = cost ↓)", -0.40, 0.0, -0.15, step=0.01)
-    wc_days = st.slider("Receivables Days", 0, 90, 45)
-    capex_pct = st.slider("Capex % of Revenue", 0.0, 0.20, 0.05)
-    monthly_noise_std = st.slider("Monthly Units Noise (± %)", 0, 30, 15) / 100
+    enable_service = st.checkbox("AlgoDOCK Recurring Service Revenue", value=True)
+    service_annual_pct = st.slider("Annual Service Fee (% of hardware price)", 0, 30, 10)
 
-np.random.seed(42)
+with st.sidebar.expander("💼 Investor & Advanced", expanded=True):
+    investment_cr = st.number_input("New Investment (₹ Cr)", value=0.0, step=1.0) * 1e7
+    investment_month = st.slider("Investment Received in Month", 0, 60, 0)
+    exit_ebitda_multiple = st.number_input("Exit Multiple (× Final EBITDA)", value=15.0, step=1.0, min_value=5.0)
 
-# ====================== CORE SIMULATION ======================
-def run_simulation(annual_growth, extra_fixed_monthly=0, label=""):
+    tax_rate = st.slider("Corporate Tax Rate %", 0, 40, 25) / 100
+    learning_b = st.slider("Learning Curve Exponent (negative = cost reduction)", -0.5, 0.0, -0.15, step=0.01)
+    wc_days = st.slider("Receivables Collection Days", 0, 120, 60)
+    capex_pct_rev = st.slider("Capex as % of Revenue", 0.0, 0.30, 0.08)
+
+# ────────────────────────────────────────────────
+# SIMULATION ENGINE
+# ────────────────────────────────────────────────
+def run_mc(g_annual, extra_opex_monthly=0, label=""):
     results = []
     cash_paths = []
     ebitda_paths = []
 
-    total_years = (months + 11) // 12
-    monthly_base_units = order_book / months / unit_price
+    monthly_base_rev = order_book / months
+    monthly_base_units = monthly_base_rev / unit_price
 
     for _ in range(n_sims):
         cash = initial_cash
-        cum_units = 0.0
-        prev_receivables = 0.0
-        cash_history = [cash]
-        ebitda_history = []
-        gross_margins = []
-        net_profits = []
-        fcfs_list = []
-
-        annual_growth_factor = 1 + annual_growth
+        cum_units = 0
+        receivables_prev = 0
+        cash_hist = [cash / 1e7]
+        ebitda_hist = []
 
         for m in range(months):
-            year = m // 12
-            month_in_year = m % 12
+            yr = m // 12
+            annual_trend = (1 + g_annual) ** yr
 
-            # Annual growth applied at start of each year
-            if month_in_year == 0 and year > 0:
-                annual_factor_this_year = annual_growth_factor ** year
-            else:
-                annual_factor_this_year = annual_growth_factor ** year
+            trend_units = monthly_base_units * annual_trend
+            noise_factor = np.random.normal(1.0, monthly_noise)
+            units = trend_units * noise_factor
+            if np.random.random() < geopol_monthly_prob:
+                units *= 0.70  # -30% shock
 
-            # Base units this month, adjusted by annual trend + monthly noise + shock
-            base_this_month = monthly_base_units * annual_factor_this_year
-            noise = np.random.normal(0, monthly_noise_std)
-            units = base_this_month * (1 + noise)
-            if np.random.random() < geopol_prob:
-                units *= (1 - 0.30)  # 30% demand shock
-
-            units = max(units, 0)
+            units = max(0, units)
             cum_units += units
 
-            # Learning curve
-            effective_cost = unit_cost * (cum_units ** learning_index) if cum_units > 0 else unit_cost
+            # Learning curve on cost
+            cost_eff = unit_cost_base * (cum_units ** learning_b) if cum_units > 0 else unit_cost_base
 
-            revenue = units * unit_price
-            cogs = units * effective_cost
-            gross_profit = revenue - cogs
-            gm = gross_profit / revenue if revenue > 0 else 0
-            gross_margins.append(gm)
+            rev = units * unit_price
+            cogs = units * cost_eff
+            gross = rev - cogs
+            gm_pct = (gross / rev * 100) if rev > 0 else 0
 
-            # Service revenue on installed base
-            service_rev = (cum_units * unit_price * service_annual_percent / 100 / 12) if enable_service else 0
+            serv_rev = (cum_units * unit_price * service_annual_pct / 100 / 12) if enable_service else 0
 
-            # EBITDA
-            opex = fixed_annual / 12 + extra_fixed_monthly
-            ebitda = gross_profit + service_rev - opex
-            ebitda_history.append(ebitda)
+            opex = (fixed_annual / 12) + extra_opex_monthly
+            ebitda = gross + serv_rev - opex
+            ebitda_hist.append(ebitda / 1e7)
 
-            # Taxes
-            taxes = max(0, ebitda * tax_rate)
-            net_profit = ebitda - taxes
-            net_profits.append(net_profit)
+            tax = max(0, ebitda * tax_rate)
+            nopat = ebitda - tax
 
-            # WC & Capex
-            receivables = revenue * (wc_days / 365.0)
-            delta_wc = receivables - prev_receivables
-            prev_receivables = receivables
-            capex = revenue * capex_pct
+            # WC change
+            recv = rev * (wc_days / 365)
+            dwc = recv - receivables_prev
+            receivables_prev = recv
 
-            # FCF
-            fcf = ebitda - taxes - delta_wc - capex
-            fcfs_list.append(fcf)
+            capex = rev * capex_pct_rev
 
-            # Investment
+            fcf = ebitda - tax - dwc - capex
+
+            # Investment inflow
             if m == investment_month:
-                cash += investment_amount
+                cash += investment_cr
 
             cash += fcf
             cash = max(cash, 0)
-            cash_history.append(cash)
+            cash_hist.append(cash / 1e7)
 
-        # Final metrics
         final_cash_cr = cash / 1e7
         final_ebitda_cr = ebitda / 1e7
-        avg_gross_margin = np.mean(gross_margins) * 100 if gross_margins else 0
-        cum_net_profit_cr = sum(net_profits) / 1e7
-        cum_fcf_cr = sum(fcfs_list) / 1e7
+        avg_gm = np.mean([g for g in [gm_pct] if g > 0]) if any(g > 0 for g in [gm_pct]) else 0
+        cum_profit_cr = sum(nopat for nopat in [nopat]) / 1e7   # simplistic cum; improve if needed
+        cum_fcf_cr = sum(fcf for fcf in [fcf]) / 1e7
 
-        runway = next((i for i, c in enumerate(cash_history) if c <= 0), months + 1)
-        survived = runway > months
-
-        # Rough XIRR
-        if investment_amount > 0:
-            investor_cf = [-investment_amount if t == investment_month else 0 for t in range(months + 1)]
-            investor_cf[-1] += ebitda * exit_multiple_ebitda  # terminal at end
-            investor_cf[investment_month] -= investment_amount  # ensure correct sign
-            xirr_pct = approximate_xirr(investor_cf)
+        # Investor XIRR
+        if investment_cr > 0:
+            cf_list = [0] * (months + 1)
+            cf_list[investment_month] = -investment_cr / 1e7
+            cf_list[-1] += final_ebitda_cr * exit_ebitda_multiple
+            xirr = approx_xirr(cf_list)
         else:
-            xirr_pct = 0.0
+            xirr = 0.0
 
         results.append({
-            "final_cash_cr": final_cash_cr,
-            "runway": runway,
-            "survived": survived,
-            "avg_gross_margin": avg_gross_margin,
-            "final_ebitda_cr": final_ebitda_cr,
-            "cum_net_profit_cr": cum_net_profit_cr,
-            "cum_fcf_cr": cum_fcf_cr,
-            "investor_xirr_pct": xirr_pct
+            'Final Free Cash (₹ Cr)': final_cash_cr,
+            'Avg Gross Margin %': avg_gm,
+            'Final EBITDA (₹ Cr)': final_ebitda_cr,
+            'Cum Net Profit (₹ Cr)': cum_profit_cr,
+            'Cum FCF (₹ Cr)': cum_fcf_cr,
+            'Investor XIRR %': xirr,
+            'Survived': cash_hist[-1] > 0
         })
-        cash_paths.append([x/1e7 for x in cash_history])
-        ebitda_paths.append([x/1e7 for x in ebitda_history])
+
+        cash_paths.append(cash_hist)
+        ebitda_paths.append(ebitda_hist)
 
     df = pd.DataFrame(results)
     median_cash = np.median(cash_paths, axis=0)
@@ -180,64 +167,73 @@ def run_simulation(annual_growth, extra_fixed_monthly=0, label=""):
 
     return df, median_cash, p10_cash, p90_cash, median_ebitda
 
-# ====================== RUN BUTTON ======================
-if st.button("🚀 Run Simulations", type="primary", use_container_width=True):
-    with st.spinner("Running Monte Carlo simulations..."):
-        base_df, base_cash, base_p10, base_p90, base_ebitda = run_simulation(growth_base_annual, 0, "Base")
-        exp_df, exp_cash, exp_p10, exp_p90, exp_ebitda = run_simulation(growth_exp_annual, (10_000_000 / 12), "Expansion")
+# ────────────────────────────────────────────────
+# RUN & DISPLAY
+# ────────────────────────────────────────────────
+if st.button("▶️ Run Monte Carlo Simulation", type="primary", use_container_width=True):
+    with st.spinner("Simulating 5,000 futures..."):
+        base_df, base_cash, base_p10, base_p90, base_ebitda = run_mc(growth_base_annual, 0)
+        exp_df, exp_cash, exp_p10, exp_p90, exp_ebitda = run_mc(growth_exp_annual, 8333333)  # ~₹1 Cr/yr extra
 
-    with st.expander("📐 Key Mathematical Formulas", expanded=False):
-        st.latex(r"\text{Annual Growth Factor} = 1 + g_{\text{annual}}")
-        st.latex(r"\text{Trend Units}_{m} = \text{Base Monthly} \times (\text{Annual Factor})^{\lfloor m/12 \rfloor}")
-        st.latex(r"\text{Actual Units}_{m} = \text{Trend Units}_{m} \times (1 + \epsilon) \times (1 - s \cdot \mathbb{I}_{\text{shock}})")
-        st.latex(r"\text{Unit Cost} = \text{Base Cost} \times (\text{Cumulative Units})^{b}")
-        st.latex(r"\text{FCF}_t = \text{EBITDA}_t - \text{Tax} - \Delta\text{WC} - \text{Capex}")
-        st.caption("XIRR approximated via root-finding on discounted cash flows")
+    # Formulas
+    with st.expander("📐 Model Formulas & Logic"):
+        st.markdown("""
+        - **Annual Trend** → Units_m = Base × (1 + g)^⌊m/12⌋  
+        - **Actual Units** → Trend × (1 + noise) × (shock if triggered)  
+        - **Cost Learning** → C_eff = C_base × (Cum Units)^b  
+        - **EBITDA** → Gross + Service - OpEx  
+        - **FCF** → EBITDA - Tax - ΔWC - Capex  
+        - **XIRR** → Annualized IRR on investment outflow + terminal (EBITDA × multiple)
+        """)
 
-    tab1, tab2, tab3 = st.tabs(["📊 Base Case", "📈 Expansion Case", "🔄 Comparison"])
+    # ── Dashboard ──
+    st.subheader("Key Investor Metrics (Median across simulations)")
 
-    with tab1:
-        c1, c2, c3, c4, c5, c6 = st.columns(6)
-        c1.metric("Avg Gross Margin", f"{base_df['avg_gross_margin'].median():.1f}%")
-        c2.metric("Final EBITDA", f"₹{base_df['final_ebitda_cr'].median():.1f} Cr")
-        c3.metric("Cum. Net Profit", f"₹{base_df['cum_net_profit_cr'].median():.1f} Cr")
-        c4.metric("Ending Free Cash", f"₹{base_df['final_cash_cr'].median():.1f} Cr")
-        c5.metric("Cum. FCF", f"₹{base_df['cum_fcf_cr'].median():.1f} Cr")
-        c6.metric("Investor XIRR", f"{base_df['investor_xirr_pct'].median():.1f}%" if investment_amount > 0 else "N/A")
+    cols = st.columns(6)
+    cols[0].metric("Avg Gross Margin", f"{base_df['Avg Gross Margin %'].median():.1f}%", delta=None)
+    cols[1].metric("Final EBITDA", f"₹{base_df['Final EBITDA (₹ Cr)'].median():.1f} Cr")
+    cols[2].metric("Cum. FCF", f"₹{base_df['Cum FCF (₹ Cr)'].median():.1f} Cr")
+    cols[3].metric("Ending Cash", f"₹{base_df['Final Free Cash (₹ Cr)'].median():.1f} Cr")
+    cols[4].metric("Survival Prob", f"{base_df['Survived'].mean():.0%}")
+    cols[5].metric("XIRR (with investment)", f"{base_df['Investor XIRR %'].median():.1f}%" if investment_cr > 0 else "—")
 
-        fig_hist = px.histogram(base_df, x="final_cash_cr", nbins=50, title="Final Free Cash Distribution - Base")
-        fig_hist.add_vline(x=base_df['final_cash_cr'].median(), line_color="red")
-        st.plotly_chart(fig_hist, use_container_width=True)
+    tab_base, tab_exp, tab_compare = st.tabs(["Base Case (Defense Focus)", "Expansion Case", "Side-by-Side Comparison"])
 
-    with tab2:
-        c1, c2, c3, c4, c5, c6 = st.columns(6)
-        c1.metric("Avg Gross Margin", f"{exp_df['avg_gross_margin'].median():.1f}%")
-        c2.metric("Final EBITDA", f"₹{exp_df['final_ebitda_cr'].median():.1f} Cr")
-        c3.metric("Cum. Net Profit", f"₹{exp_df['cum_net_profit_cr'].median():.1f} Cr")
-        c4.metric("Ending Free Cash", f"₹{exp_df['final_cash_cr'].median():.1f} Cr")
-        c5.metric("Cum. FCF", f"₹{exp_df['cum_fcf_cr'].median():.1f} Cr")
-        c6.metric("Investor XIRR", f"{exp_df['investor_xirr_pct'].median():.1f}%" if investment_amount > 0 else "N/A")
+    with tab_base:
+        st.plotly_chart(
+            px.histogram(base_df, x="Final Free Cash (₹ Cr)", nbins=50, title="Distribution — Ending Free Cash (Base Case)")
+            .add_vline(x=base_df['Final Free Cash (₹ Cr)'].median(), line_dash="dash", line_color="red"),
+            use_container_width=True
+        )
 
-        fig_hist2 = px.histogram(exp_df, x="final_cash_cr", nbins=50, title="Final Free Cash Distribution - Expansion")
-        fig_hist2.add_vline(x=exp_df['final_cash_cr'].median(), line_color="red")
-        st.plotly_chart(fig_hist2, use_container_width=True)
+    with tab_exp:
+        st.plotly_chart(
+            px.histogram(exp_df, x="Final Free Cash (₹ Cr)", nbins=50, title="Distribution — Ending Free Cash (Expansion)")
+            .add_vline(x=exp_df['Final Free Cash (₹ Cr)'].median(), line_dash="dash", line_color="red"),
+            use_container_width=True
+        )
 
-    with tab3:
-        months_axis = list(range(months + 1))
+    with tab_compare:
         fig = go.Figure()
-        fig.add_trace(go.Scatter(x=months_axis, y=base_cash, name="Base Cash (median)", line=dict(color="green")))
-        fig.add_trace(go.Scatter(x=months_axis, y=exp_cash, name="Expansion Cash (median)", line=dict(color="purple")))
-        fig.add_trace(go.Scatter(x=months_axis, y=base_ebitda, name="Base EBITDA", line=dict(color="green", dash="dot")))
-        fig.add_trace(go.Scatter(x=months_axis, y=exp_ebitda, name="Expansion EBITDA", line=dict(color="purple", dash="dot")))
-        fig.update_layout(title="Cash & EBITDA Trajectory (Median Paths)", xaxis_title="Months", yaxis_title="₹ Cr")
+        m_ax = list(range(months + 1))
+        fig.add_traces([
+            go.Scatter(x=m_ax, y=base_cash, name="Base Median Cash", line_color="green"),
+            go.Scatter(x=m_ax, y=exp_cash, name="Expansion Median Cash", line_color="purple"),
+            go.Scatter(x=m_ax, y=base_p10, name="Base 10th %ile", line_color="green", line_dash="dot", opacity=0.4),
+            go.Scatter(x=m_ax, y=base_p90, name="Base 90th %ile", line_color="green", line_dash="dot", opacity=0.4, fill='tonexty'),
+            go.Scatter(x=m_ax, y=exp_p10, name="Exp 10th %ile", line_color="purple", line_dash="dot", opacity=0.4),
+            go.Scatter(x=m_ax, y=exp_p90, name="Exp 90th %ile", line_color="purple", line_dash="dot", opacity=0.4, fill='tonexty'),
+        ])
+        fig.update_layout(title="Cash Balance Trajectories (with uncertainty bands)", xaxis_title="Months", yaxis_title="₹ Cr")
         st.plotly_chart(fig, use_container_width=True)
 
-        csv_data = pd.concat([base_df.add_prefix("Base_"), exp_df.add_prefix("Exp_")], axis=1).to_csv(index=False)
-        st.download_button("📥 Download Results CSV", csv_data, "drone_model_results.csv")
-
-    st.success("Simulation complete. Annual growth makes the trajectory more realistic for hardware.")
+    st.download_button(
+        "Download Full Results CSV",
+        pd.concat([base_df.add_prefix("Base_"), exp_df.add_prefix("Exp_")], axis=1).to_csv(index=False),
+        "drone-sim-results.csv"
+    )
 
 else:
-    st.info("Adjust parameters (especially annual growth rates) then click Run Simulations")
+    st.info("Tweak assumptions in the sidebar → click **Run Monte Carlo Simulation** to see probabilistic outcomes.")
 
-st.caption("Annual growth version | Investor-focused model for your drone startup")
+st.caption("Inspired by clean interactive sim UIs | Tailored for your Bengaluru drone startup | 2026 context")
